@@ -27,7 +27,6 @@
 !src/web/AppShell.e2e.test.ts
 !scripts/
 !scripts/build-artifacts.sh
-!scripts/build-artifacts.test.ts
 !scripts/healthcheck.sh
 **/.env*
 **/*.sqlite*

@@ -19,7 +19,7 @@
 
 ## Review Focus
 
-- Quoting or dates must not produce invalid build metadata (Task 1 tests).
+- Quoting or dates must not produce invalid build metadata (Task 1 build verification).
 - Declaring a production file without importing it must not silently drop it from coverage (Task 2 include patterns and report inspection).
 - A shell/browser error must not leave an unrelated container, volume, or host setting changed (Task 3 unique resource names and cleanup).
 - An image that happens to share a tag must not be mistaken for the Podman-built image in Moby (Task 3 image identity check).
@@ -27,9 +27,9 @@
 
 ## Task 1: Move build helpers and tests
 
-**Files:** `scripts/build-artifacts.sh`, `scripts/build-artifacts.test.ts`, `src/server/build-app.test.ts`, `src/server/persistence/{open,migrations}.test.ts`, `src/web/AppShell.test.ts`, runner configs, and `package.json`. Remove the former metadata `.mjs` helper and retired test paths.
+**Files:** `scripts/build-artifacts.sh`, `src/server/build-app.test.ts`, `src/server/persistence/{open,migrations}.test.ts`, `src/web/AppShell.test.ts`, runner configs, and `package.json`. Remove the former metadata `.mjs` helper and retired test paths.
 
-- [ ] Point the colocated artifact tests at `bash scripts/build-artifacts.sh` from an isolated build tree. Keep the known valid timestamp/run and impossible date cases; also assert all missing inputs produce null and invalid input fails without writing the metadata. Run `npm test` and observe the unsupported shell entry point fail.
+- [ ] Verify that the build emits null fields for missing local provenance and rejects invalid release metadata. Do not add a test file for the Bash helper.
 - [ ] Implement the Bash writer. `BUILD_REVISION`, `BUILD_TIMESTAMP`, and `BUILD_RUN_URL` keep their existing validation and meaning; validate before copying `001-foundation.sql` and writing `dist/build.json`. Update the npm entry point to call Bash.
 - [ ] Relocate HTTP, database, and browser tests beside their subject. Keep Playwright smoke and Vitest browser tests discoverable by their own configurations without running one test twice. Run `bash -n scripts/build-artifacts.sh`, `npm run check`, and `npm test`; expect green and no duplicate tests. Commit the tooling and layout changes.
 

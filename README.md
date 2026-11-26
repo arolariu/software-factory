@@ -19,7 +19,7 @@ Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api
 
 ## Test coverage
 
-Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. Shell and container behavior is tested separately.
+Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. The container smoke checks the built application, not the Bash helpers themselves.
 
 ## Verify the Linux image
 
