@@ -8,9 +8,13 @@ interface Migration {
 
 const migrations: readonly Migration[] = [
   { version: 1, sql: readFileSync(new URL('./001-foundation.sql', import.meta.url), 'utf8') },
+  { version: 2, sql: readFileSync(new URL('./002-identity.sql', import.meta.url), 'utf8') },
 ];
 
-const requiredTables = ['users', 'identities', 'repositories', 'repo_connections', 'repo_snapshots', 'tasks'];
+const requiredTables = [
+  'users', 'identities', 'repositories', 'repo_connections', 'repo_snapshots', 'tasks',
+  'portal_sessions', 'oauth_intents', 'delegated_grants', 'connection_access', 'copilot_defaults',
+];
 const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item'];
 
 export function hasCurrentSchema(db: SQLite.Database): boolean {

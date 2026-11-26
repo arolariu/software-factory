@@ -23,7 +23,7 @@ json_optional() {
   if [[ -n $1 ]]; then printf '"%s"' "$1"; else printf null; fi
 }
 
-cp src/server/persistence/001-foundation.sql dist/server/persistence/001-foundation.sql
+cp src/server/persistence/*.sql dist/server/persistence/
 printf '{"revision":%s,"builtAt":%s,"runUrl":%s}\n' \
   "$(json_optional "$revision")" "$(json_optional "$built_at")" "$(json_optional "$run_url")" \
   > dist/build.json
