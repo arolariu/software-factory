@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -91,6 +92,20 @@ describe('Fastify foundation', () => {
     }
     expect((await server.inject('/connections/example')).statusCode).toBe(404);
   });
+
+  it('does not rewrite missing reserved routes in absolute-form requests to the SPA', async () => {
+    const server = await makeApp();
+    const origin = await server.listen({ host: '127.0.0.1', port: 0 });
+    for (const path of ['/api/missing', '/auth/missing', '/assets/missing']) {
+      const status = await new Promise<number | undefined>((done, fail) => {
+        get(origin, { path: `http://localhost${path}`, headers: { accept: 'text/html' } }, (response) => {
+          response.resume();
+          done(response.statusCode);
+        }).on('error', fail);
+      });
+      expect(status, path).toBe(404);
+    }
+  });
 });
 
 describe('SQLite foundation', () => {
@@ -113,6 +128,12 @@ describe('SQLite foundation', () => {
     }])).toThrow();
     expect(db.pragma('user_version', { simple: true })).toBe(0);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'partial'").get()).toBeUndefined();
+    expect((await (await makeApp()).inject('/healthz')).statusCode).toBe(503);
+  });
+
+  it('rejects readiness if a required schema object is missing despite the current version', async () => {
+    migrate(db);
+    db.exec('DROP INDEX one_active_task_per_repo_item');
     expect((await (await makeApp()).inject('/healthz')).statusCode).toBe(503);
   });
 

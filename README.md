@@ -21,6 +21,7 @@ Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api
 ## Verify the Linux image
 
 With Docker BuildKit and PowerShell 7, supply an npm config scoped to the approved registry as a build secret. Keep that file outside this repository. The smoke test builds the image, checks the running non-root server, replaces it with the same data volume, and restores an online SQLite backup into a fresh volume.
+For deployment, provision a host-local `/data` mount owned by UID/GID `1000:1000` with mode `0700`; the container refuses to use an alternate or shared data directory. Update `.dockerignore` when adding build inputs.
 
 ```powershell
 .\tests\backend\container-smoke.ps1 -NpmConfig $npmConfigPath -DockerContext default

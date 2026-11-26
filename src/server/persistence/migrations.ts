@@ -10,8 +10,16 @@ const migrations: readonly Migration[] = [
   { version: 1, sql: readFileSync(new URL('./001-foundation.sql', import.meta.url), 'utf8') },
 ];
 
+const requiredTables = ['users', 'identities', 'repositories', 'repo_connections', 'repo_snapshots', 'tasks'];
+const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item'];
+
 export function hasCurrentSchema(db: SQLite.Database): boolean {
-  return db.open && db.pragma('user_version', { simple: true }) === migrations.length;
+  if (!db.open || db.pragma('user_version', { simple: true }) !== migrations.length) return false;
+  const rows = db.prepare("SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'index')")
+    .all() as { name: string; type: string }[];
+  const objects = new Map(rows.map(({ name, type }) => [name, type]));
+  return requiredTables.every((name) => objects.get(name) === 'table') &&
+    requiredIndexes.every((name) => objects.get(name) === 'index');
 }
 
 export function migrate(db: SQLite.Database, steps = migrations): void {

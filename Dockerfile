@@ -32,4 +32,4 @@ USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
     CMD ["node","-e","fetch(`http://127.0.0.1:${process.env.PORT}/healthz`,{signal:AbortSignal.timeout(2000)}).then(r=>{if(!r.ok)process.exitCode=1},()=>{process.exitCode=1})"]
-CMD ["node", "dist/server/main.js"]
+CMD ["node", "dist/server/main.js", "--container"]

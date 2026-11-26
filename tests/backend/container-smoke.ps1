@@ -61,15 +61,39 @@ function Use-Database([string]$volume, [string]$scriptText, [string]$backupVolum
     Invoke-Docker run @options --entrypoint node $Image --input-type=module -e $scriptText
 }
 
+function Assert-BootFails([string]$reason, [string[]]$options) {
+    $name = "$instance-negative"
+    Invoke-Docker run -d --name $name @options $Image | Out-Null
+    try {
+        for ($i = 0; $i -lt 40; $i++) {
+            $status = Invoke-Docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' $name
+            if ($status -eq 'exited 1') { return }
+            if ($status -like 'exited *') { throw "Unexpected shutdown status: $status ($reason)." }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "Container accepted an unusable data location: $reason."
+    } finally {
+        Invoke-Docker rm --force $name | Out-Null
+    }
+}
+
 Push-Location (Join-Path $PSScriptRoot '..\..')
+$publicRoot = Join-Path (Get-Location).Path 'src\web\public'
+$hadPublicRoot = Test-Path -LiteralPath $publicRoot
+$fixtureName = "$instance-private.txt"
+$publicFixture = Join-Path $publicRoot $fixtureName
 try {
+    if (-not $hadPublicRoot) { New-Item -ItemType Directory -Path $publicRoot | Out-Null }
+    Set-Content -LiteralPath $publicFixture -Value 'This untracked local file must not enter the image.'
     & docker --context $DockerContext build --secret "id=npm_config,src=$npmConfigPath" --tag $Image .
     if ($LASTEXITCODE -ne 0) { throw 'The foundation image failed to build.' }
+
+    Assert-BootFails 'overridden ephemeral directory' @('--env', 'FACTORY_DATA_DIR=/tmp')
 
     foreach ($volume in @($data, $restored)) {
         Invoke-Docker volume create $volume | Out-Null
         Invoke-Docker run --rm --user root --mount "type=volume,source=$volume,target=/data" `
-            --entrypoint node $Image -e "require('node:fs').chownSync('/data', 1000, 1000)" | Out-Null
+            --entrypoint node $Image -e "const fs=require('node:fs'); fs.chownSync('/data', 1000, 1000); fs.chmodSync('/data', 0o700)" | Out-Null
     }
 
     $origin = Start-Portal $data
@@ -90,10 +114,11 @@ try {
     }
     Invoke-Docker exec $instance node --input-type=module -e @'
 import { existsSync } from 'node:fs';
-if (process.getuid() === 0 || ['/app/src', '/app/tests', '/app/.npmrc', '/app/node_modules/vitest'].some(existsSync)) {
+const privateFixture = `/app/dist/web/${process.argv[1]}`;
+if (process.getuid() === 0 || ['/app/src', '/app/tests', '/app/.npmrc', '/app/node_modules/vitest', privateFixture].some(existsSync)) {
   process.exit(1);
 }
-'@
+'@ $fixtureName
 
     if ($Browser) {
         $env:FACTORY_SMOKE_URL = $origin
@@ -140,11 +165,17 @@ db.close();
     $origin = Start-Portal $restored
     Use-Database $restored $assertConnection
     Stop-Portal
+    Invoke-Docker run --rm --user root --mount "type=volume,source=$restored,target=/data" `
+        --entrypoint node $Image -e "require('node:fs').chmodSync('/data/factory.sqlite', 0o400)" | Out-Null
+    Assert-BootFails 'read-only current-schema SQLite file' @('--mount', "type=volume,source=$restored,target=/data")
     Write-Host 'Container smoke passed: non-root, compiled shell, route boundaries, native SQLite, restart, and online backup restore.'
 } finally {
     if ($running) { & docker --context $DockerContext rm --force $instance | Out-Null }
     foreach ($volume in @($data, $restored)) {
         & docker --context $DockerContext volume rm $volume 2>$null | Out-Null
     }
+    if (Test-Path -LiteralPath $publicFixture) { Remove-Item -LiteralPath $publicFixture }
+    if (-not $hadPublicRoot -and (Test-Path -LiteralPath $publicRoot) -and
+        -not (Get-ChildItem -LiteralPath $publicRoot -Force)) { Remove-Item -LiteralPath $publicRoot }
     Pop-Location
 }

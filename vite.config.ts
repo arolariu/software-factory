@@ -4,6 +4,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: fileURLToPath(new URL('./src/web/', import.meta.url)),
+  publicDir: false,
   plugins: [svelte()],
   build: {
     outDir: fileURLToPath(new URL('./dist/web/', import.meta.url)),

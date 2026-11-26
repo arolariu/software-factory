@@ -31,12 +31,13 @@ function isPageNavigation(request: FastifyRequest): boolean {
   if (!acceptsHtml) return false;
   let pathname: string;
   try {
-    pathname = decodeURIComponent(request.url.split('?')[0]);
+    const target = request.url;
+    pathname = decodeURIComponent(target.startsWith('/') ? target.split('?')[0] : new URL(target).pathname);
   } catch {
     return false;
   }
-  const segments = pathname.split('/');
-  return !['api', 'auth', 'healthz', 'assets'].includes(segments[1]?.toLowerCase()) &&
+  const segments = pathname.split('/').filter(Boolean);
+  return !['api', 'auth', 'healthz', 'assets'].includes(segments[0]?.toLowerCase()) &&
     !segments.some((segment) => segment.includes('.'));
 }
 

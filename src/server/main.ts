@@ -2,14 +2,22 @@ import { accessSync, constants, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp, type BuildMetadata } from './build-app.js';
-import { migrate } from './persistence/migrations.js';
+import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
 
 async function main() {
   const dataDir = resolve(process.env.FACTORY_DATA_DIR ?? '/data');
   const port = Number(process.env.PORT ?? '3000');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
-  if (!statSync(dataDir).isDirectory()) throw new Error('Factory data path must be a directory.');
+  const dataInfo = statSync(dataDir);
+  if (!dataInfo.isDirectory()) throw new Error('Factory data path must be a directory.');
+  if (process.argv.includes('--container')) {
+    const mounted = readFileSync('/proc/self/mountinfo', 'utf8').split('\n')
+      .some((line) => line.split(' ')[4] === '/data');
+    if (dataDir !== '/data' || !mounted || (dataInfo.mode & 0o077) !== 0) {
+      throw new Error('The container requires a private, writable mount at /data.');
+    }
+  }
   accessSync(dataDir, constants.W_OK);
 
   const staticRoot = fileURLToPath(new URL('../web/', import.meta.url));
@@ -19,6 +27,7 @@ async function main() {
 
   try {
     migrate(db);
+    if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
     const app = await buildApp({ db, staticRoot, build, isDraining: () => draining, logger: true });
     const shutdown = async () => {
       if (draining) return;

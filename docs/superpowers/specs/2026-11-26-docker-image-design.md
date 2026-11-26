@@ -53,7 +53,7 @@ USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
   CMD ["node","-e","fetch('http://127.0.0.1:3000/healthz',{signal:AbortSignal.timeout(2000)}).then(r=>{if(!r.ok)process.exitCode=1},()=>{process.exitCode=1})"]
-CMD ["node","dist/server/main.js"]
+CMD ["node","dist/server/main.js","--container"]
 ```
 
 ### Stage and artifact rules
@@ -69,7 +69,7 @@ CMD ["node","dist/server/main.js"]
 | --- | --- |
 | Ingress | One Fastify listener on `0.0.0.0:3000`; terminate TLS at trusted ingress. This is the only app container; ingress is host/platform infrastructure. Configure the canonical HTTPS origin explicitly for OAuth redirects and Origin validation. Trust forwarded headers only from the configured proxy; do not expose the backend port directly to public clients. |
 | `/app` | Immutable artifact. Run as the image's unprivileged `node` user; provision mounts for its numeric UID/GID. Use a read-only root filesystem, drop Linux capabilities and enable no-new-privileges. Never use privileged mode or mount the Docker socket. |
-| `/data` (required) | Pre-provision a writable, private host-local directory, one active Factory instance per data directory. Store SQLite with its WAL/SHM siblings, the separate encrypted credential store, and approved durable private state. Mount the directory, not just the DB file. Initial startup can migrate an empty mounted directory; if `/data` is absent or unwritable, fail rather than creating an ephemeral DB elsewhere. Do not place it on a network share or mount it into a task process. |
+| `/data` (required) | Pre-provision a writable host-local directory owned by the app user, mode `0700`, with one active Factory instance per data directory. Store SQLite with its WAL/SHM siblings, the separate encrypted credential store, and approved durable private state. Mount the directory, not just the DB file. The container refuses absent, shared, read-only, or alternate data locations rather than creating an ephemeral DB elsewhere. Do not place it on a network share or mount it into a task process. |
 | `/run/secrets` | Read-only runtime secrets with restricted file access, including the app encryption key and configured OAuth app secrets. Keep these out of the DB backup, image, build-time registry config, logs, and task environment. A deployment with configured provider auth must fail startup if required secret files are absent or unreadable. |
 | `/tmp` | Bounded writable tmpfs for temporary files if needed; never the location of the DB, credential store, or durable SDK resume state. |
 | `/workspaces` (gated) | Separate, writable host-local storage only for an approved Azure DevOps runner. Keep backend seed clones private; a task sees only its own isolated workspace, never sibling workspaces, application data, secrets, or repository write credentials. If that boundary cannot be proved on the host, leave Azure DevOps execution unavailable. Native GitHub-hosted runs do not require this mount. |
