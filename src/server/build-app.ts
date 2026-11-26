@@ -3,6 +3,10 @@ import { join, resolve } from 'node:path';
 import fastifyStatic from '@fastify/static';
 import type SQLite from 'better-sqlite3';
 import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
+import { ApiSchemas } from '../shared/api/schemas.js';
+import type { PortalOptions } from './http/portal-modules.js';
+import { ApiFailure, sendProblem } from './http/problems.js';
+import { registerPortalRoutes } from './http/routes.js';
 import { hasCurrentSchema } from './persistence/migrations.js';
 
 export interface BuildMetadata {
@@ -17,6 +21,12 @@ export interface BuildAppOptions {
   build: BuildMetadata;
   isDraining?: () => boolean;
   logger?: boolean;
+  portal?: PortalOptions;
+}
+
+function pathSegments(target: string): string[] {
+  const path = target.startsWith('/') ? target.slice(0, target.search(/\?|$/)) : new URL(target).pathname;
+  return decodeURIComponent(path).split('/').filter(Boolean);
 }
 
 function isPageNavigation(request: FastifyRequest): boolean {
@@ -30,17 +40,23 @@ function isPageNavigation(request: FastifyRequest): boolean {
     return mediaType === 'text/html' && (quality === undefined || Number(quality.split('=')[1]) > 0);
   });
   if (!acceptsHtml) return false;
-  let pathname: string;
+  let segments: string[];
   try {
-    const target = request.url;
-    pathname = decodeURIComponent(target.startsWith('/') ? target.slice(0, target.search(/\?|$/)) : new URL(target).pathname);
+    segments = pathSegments(request.url);
   } catch {
     return false;
   }
-  const segments = pathname.split('/').filter(Boolean);
   const firstSegment = (segments[0] ?? '').toLowerCase();
   return !['api', 'auth', 'healthz', 'assets'].includes(firstSegment) &&
     !segments.some((segment) => segment.includes('.'));
+}
+
+function isApiPath(target: string) {
+  try {
+    return ['api', 'auth'].includes((pathSegments(target)[0] ?? '').toLowerCase());
+  } catch {
+    return /^\/(?:api|auth)(?:\/|$)/i.test(target);
+  }
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -52,6 +68,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const app = Fastify({
     logger: options.logger ?? false,
     logController: new LogController({ disableRequestLogging: true }),
+    requestIdHeader: false,
+    ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } },
   });
   app.register(fastifyStatic, {
     root: assetsRoot,
@@ -60,21 +78,23 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     maxAge: '1y',
     immutable: true,
   });
-  app.get('/healthz', (_request, reply) => {
+  app.get('/healthz', { schema: { response: { 200: ApiSchemas.health, 503: ApiSchemas.health } } }, (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     if (options.isDraining?.() || !hasCurrentSchema(options.db)) {
       return reply.code(503).send({ status: 'unavailable' });
     }
     return { status: 'ok' };
   });
-  app.get('/api/build', (_request, reply) => {
+  app.get('/api/build', { schema: { response: { 200: ApiSchemas.build } } }, (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     return options.build;
   });
+  registerPortalRoutes(app, options.portal);
   app.setNotFoundHandler((request, reply) => {
     if (isPageNavigation(request)) {
       return reply.header('Cache-Control', 'no-cache').sendFile('index.html', staticRoot, { cacheControl: false });
     }
+    if (isApiPath(request.url)) return sendProblem(new ApiFailure('NOT_FOUND'), request, reply);
     return reply.code(404).send({ statusCode: 404, error: 'Not Found' });
   });
   await app.ready();

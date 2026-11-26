@@ -19,6 +19,11 @@ src/shared/api/**
 src/server/**
 !src/server/build-app.ts
 !src/server/build-app.test.ts
+!src/server/http/
+!src/server/http/portal-modules.ts
+!src/server/http/problems.ts
+!src/server/http/routes.ts
+!src/server/http/routes.test.ts
 !src/server/main.ts
 !src/server/main.test.ts
 !src/server/persistence/
