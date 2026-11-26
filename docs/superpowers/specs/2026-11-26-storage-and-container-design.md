@@ -25,14 +25,22 @@ For removal, the selected approach is **explicit stop and remove**. Blocking rem
 
 **Connect repo** takes a GitHub or Azure DevOps repository URL and opens interactive sign-in with the matching provider. After the backend confirms repository access, add and select that repository's tab. A cancelled or failed sign-in does not add a tab. Within each repository, show **Open issues**, **Open PRs**, **Closed PRs**, and **Closed issues**. Open issues is the default when opening a repo; the other views load independently so a slow PR or CI fetch does not block issue triage. Azure DevOps labels issues as work items and makes their project scope clear.
 
+The desktop shell follows the Paint sketch: identity pill at top left, connected repo tabs and **New connection** in the header, and active Copilot sessions and AI credits at top right. The left rail contains **Repo settings**, **Factory settings**, and **Copilot settings**, with the deployment's short commit SHA and build timestamp at the bottom. The main area owns the selected repository's work views and **Sync**. Repo settings follow the selected connection; factory settings do not. Copilot settings are distinct from the one-run overrides on an issue.
+
 ```text
-[ owner/repo ] [ org/project/ado-repo ] [+ Connect repo]
-Open issues | Open PRs | Closed PRs | Closed issues       [Sync]
-#42  Fix pagination on large imports                     [Settings] [Start task]
-#43  Retry stalled imports                                [View task]
+[ Signed in as Sam ]  [ owner/repo ] [ org/project/ado-repo ] [+ New connection]   [ Usage ]
+Repo settings       | Open issues | Active PRs | Closed PRs | Closed issues      [Sync]
+Factory settings    | #42  Fix pagination on large imports                      [Settings] [Start task]
+Copilot settings    | #43  Retry stalled imports                                 [Hide task]
+Build SHA / UTC     |      Copilot asks: Should retries be limited to transient errors?
+                    |      [ Your answer                                    ] [Send answer]
 ```
 
+In Svelte, keep the application shell mounted across repo navigation. Put the selected connection and work view in the URL so reload and browser history work; keep fetched data and loading state keyed by connection and view to avoid showing one repo's data under another tab. Keep the header summary separate from the repo snapshots. Proposed scope: active sessions and AI credits for the signed-in user's factory tasks across repos, not an account-wide GitHub billing total. Use backend-confirmed session state and measured SDK usage when available; distinguish unavailable or partial usage from zero. Read build info from deployment metadata rather than the selected repository.
+
 Use compact rows rather than cards so the titles, statuses, and actions are easy to scan. On narrower screens, let secondary fields wrap under the title instead of hiding the primary action. Issue rows show the issue key, title, and a link to the provider. An eligible open issue shows the settings cog to the left of **Start task**. Start uses defaults; the cog opens the existing per-run settings. If a task is already active, show **View task**. If an issue has a linked PR, show that link instead of offering launch. Closed issues never offer launch. The backend rechecks eligibility rather than relying on the cached list.
+
+**View task opens an accordion directly below the issue**, not a side panel or a separate page. Keep one row expanded at a time. The expanded row shows task status, recent activity, a pending question when present, and a form for replying or adding context. Keep the actions keyboard-accessible and announce whether the API accepted a reply. Toggle or navigate away without affecting the running task. A Svelte row owns its presentation, while the backend owns execution and the task stream is keyed by the stable task ID. Begin loading detail only when a row opens, release that view's subscription when it closes, and keep the collapsed row's summary independently current.
 
 Open PR rows show the PR key and title, `source -> target` branch names, the CI count, and **Open PR**, which opens the provider URL in a new browser tab. Include draft PRs in Open PRs and label them **Draft**. Closed PR rows keep the same layout and distinguish **Merged** from **Closed without merge** (including abandoned Azure DevOps PRs). If check data is available for a closed PR, show it for the final observed revision; do not imply the checks have run again.
 
@@ -205,6 +213,7 @@ Sync can repair missing fields on existing mappings; it cannot promise reconstru
 4. Sync is safe to repeat. A partial failure preserves only the affected source's prior snapshot, an authoritative empty result clears it, and revocation hides it. Missing or ambiguous Copilot discovery never creates a false task-to-issue or task-to-PR link.
 5. Stop and remove survives a restart, prevents stale Sync from restoring cached rows, and leaves another user's connection and in-use Azure DevOps clone intact. An uncertain stop stays pending rather than deleting a workspace still in use.
 6. Connecting a repository opens its issue list without waiting on CI. New PR revisions never inherit old check totals, and closed issues cannot start tasks.
+7. View task expands below the correct issue without changing the route or interrupting the session. Switching repositories clears the old accordion and never displays details from the previous connection.
 
 The builder can choose the API framework, SQLite driver, image base, sandbox mechanism, and event transport. Do not scaffold or deploy anything from this design until it is approved.
 
