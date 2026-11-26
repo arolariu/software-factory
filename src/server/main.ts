@@ -5,54 +5,81 @@ import { buildApp, type BuildMetadata } from './build-app.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
 
-async function main() {
-  const dataDir = resolve(process.env.FACTORY_DATA_DIR ?? '/data');
-  const port = Number(process.env.PORT ?? '3000');
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
+interface StartupOptions {
+  dataDir: string;
+  artifactDir: string;
+  port: number;
+  container?: boolean;
+  logger?: boolean;
+}
+
+export function verifyContainerData(dataDir: string, mode: number, mountInfo: string): void {
+  const mounted = mountInfo.split('\n').some((line) => line.split(' ')[4] === '/data');
+  if (dataDir !== '/data' || !mounted || (mode & 0o077) !== 0) {
+    throw new Error('The container requires a private, writable mount at /data.');
+  }
+}
+
+export async function startServer(options: StartupOptions) {
+  const { port, artifactDir } = options;
+  const dataDir = resolve(options.dataDir);
+  if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) {
+    throw new Error('PORT must be a valid TCP port.');
+  }
   const dataInfo = statSync(dataDir);
   if (!dataInfo.isDirectory()) throw new Error('Factory data path must be a directory.');
-  if (process.argv.includes('--container')) {
-    const mounted = readFileSync('/proc/self/mountinfo', 'utf8').split('\n')
-      .some((line) => line.split(' ')[4] === '/data');
-    if (dataDir !== '/data' || !mounted || (dataInfo.mode & 0o077) !== 0) {
-      throw new Error('The container requires a private, writable mount at /data.');
-    }
-  }
+  if (options.container) verifyContainerData(dataDir, dataInfo.mode, readFileSync('/proc/self/mountinfo', 'utf8'));
   accessSync(dataDir, constants.W_OK);
 
-  const staticRoot = fileURLToPath(new URL('../web/', import.meta.url));
-  const build = JSON.parse(readFileSync(new URL('../build.json', import.meta.url), 'utf8')) as BuildMetadata;
+  const build = JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
   const db = openDatabase(join(dataDir, 'factory.sqlite'));
   let draining = false;
 
   try {
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
-    const app = await buildApp({ db, staticRoot, build, isDraining: () => draining, logger: true });
-    const shutdown = async () => {
+    const app = await buildApp({ db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger: options.logger });
+    const address = await app.listen({ host: '0.0.0.0', port });
+    const close = async () => {
       if (draining) return;
       draining = true;
-      const deadline = setTimeout(() => process.exit(1), 8_000).unref();
       try {
         await app.close();
       } finally {
         db.close();
-        clearTimeout(deadline);
       }
     };
-    await app.listen({ host: '0.0.0.0', port });
-    const stop = () => void shutdown().catch(() => { process.exitCode = 1; });
-    process.once('SIGTERM', stop);
-    process.once('SIGINT', stop);
+    return { address, close };
   } catch (error) {
     db.close();
     throw error;
   }
 }
 
-try {
-  await main();
-} catch (error) {
-  console.error('Software Factory failed to start:', error instanceof Error ? error.message : 'unexpected error');
-  process.exitCode = 1;
+export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
+  try {
+    const server = await startServer({
+      dataDir: env.FACTORY_DATA_DIR ?? '/data',
+      port: Number(env.PORT ?? '3000'),
+      artifactDir,
+      container: args.includes('--container'),
+      logger: true,
+    });
+    const stop = async () => {
+      process.off('SIGTERM', stop).off('SIGINT', stop);
+      const deadline = setTimeout(() => process.exit(1), 8_000).unref();
+      try {
+        await server.close();
+      } finally {
+        clearTimeout(deadline);
+      }
+    };
+    process.once('SIGTERM', stop).once('SIGINT', stop);
+    return { ...server, close: stop };
+  } catch (error) {
+    console.error('Software Factory failed to start:', error);
+    process.exitCode = 1;
+  }
 }
+
+if (import.meta.main) await runCli();

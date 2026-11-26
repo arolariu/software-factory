@@ -80,6 +80,12 @@ describe('Fastify foundation', () => {
     expect((await server.inject('/api/build')).json()).toEqual(build);
   });
 
+  it('refuses to serve if the portal entry is not a file', async () => {
+    rmSync(join(directory, 'index.html'));
+    mkdirSync(join(directory, 'index.html'));
+    await expect(makeApp()).rejects.toThrow('compiled portal assets');
+  });
+
   it('does not rewrite API, auth, asset errors, or unsafe requests to the SPA', async () => {
     const server = await makeApp();
     for (const [method, url] of [
@@ -91,6 +97,10 @@ describe('Fastify foundation', () => {
       expect(response.body).not.toContain('Factory test entry');
     }
     expect((await server.inject('/connections/example')).statusCode).toBe(404);
+    expect((await server.inject({ url: '/repo', headers: { accept: 'text/html;q=0' } })).statusCode).toBe(404);
+    expect((await server.inject({
+      url: '/repo', headers: { accept: 'text/html', 'sec-fetch-mode': 'cors' },
+    })).statusCode).toBe(404);
   });
 
   it('does not rewrite missing reserved routes in absolute-form requests to the SPA', async () => {

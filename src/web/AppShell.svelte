@@ -25,7 +25,7 @@
 </main>
 <footer>
   {#if build?.revision && build.runUrl}
-    <a href="https://github.com/arolariu/software-factory/commit/{build.revision}">{build.revision.slice(0, 7)}</a>
+    <a href={`https://github.com/arolariu/software-factory/commit/${build.revision}`}>{build.revision.slice(0, 7)}</a>
   {:else if build?.revision}
     <span>{build.revision.slice(0, 7)}</span>
   {/if}
