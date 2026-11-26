@@ -1,6 +1,6 @@
-# Software Factory Docker image and deployment contract
+# Software Factory container image and deployment contract
 
-**Status:** Foundation packaging is implemented in the [root Dockerfile](../../../Dockerfile). Future provider and SDK capabilities remain gated. The [backend implementation plan](../plans/2026-11-26-backend-system.md#task-1-create-the-runtime-and-persistence-foundation) owns the image smoke tests.
+**Status:** Foundation packaging is implemented in the [root Containerfile](../../../Containerfile). Future provider and SDK capabilities remain gated. The [foundation tooling plan](../plans/2026-11-26-foundation-tooling.md) owns the Podman and Rancher Moby smoke tests.
 
 ## Decision
 
@@ -9,58 +9,20 @@ Build one Linux image from the root npm project. Fastify serves the compiled Sve
 | Approach | Trade-off |
 | --- | --- |
 | **Selected: multi-stage build, one runtime image** | Build and test with the full toolchain, then copy only deployment artifacts and production dependencies. Separate stage boundaries do not add deployed services. |
-| Single-stage image | Simpler Dockerfile, but ships build tooling and development dependencies to production. |
+| Single-stage image | Simpler build definition, but ships build tooling and development dependencies to production. |
 | Separate static host, API, and worker | Independent scaling is possible, but adds deployment units and more coordination around auth, operations, and recovery. Not needed for the approved single-host release. |
 
 The [dependency baseline](2026-11-26-npm-dependencies.md) owns package pins. The [storage design](2026-11-26-storage-and-container-design.md#container-layout), [backend design](2026-11-26-backend-system-design.md), and [HTTP contract](2026-11-26-internal-api-design.md) own storage semantics, identity, and routes respectively. The [editable C4 canvas](../../architecture/software-factory-c4.excalidraw) locates those responsibilities from system context through routes and functions.
 
-## Reference Dockerfile
+## Containerfile
 
-Use the same digest-pinned, official Debian/glibc Node 24.22.3 slim image for install and runtime stages, built for the **target Linux architecture**, not copied from host `node_modules`. Pass the verified full `node:24.22.3-<debian>-slim@sha256:…` reference as `NODE_IMAGE` from CI; verifying the tag, digest, architecture, certificate trust, and native addon on the chosen platform is part of adoption. npm 12.2.3 is bootstrapped in a build stage only.
-
-```dockerfile
-# syntax=docker/dockerfile:1
-ARG NODE_IMAGE
-FROM ${NODE_IMAGE} AS npm-base
-WORKDIR /app
-RUN --mount=type=secret,id=npm_config,required=true \
-    NPM_CONFIG_USERCONFIG=/run/secrets/npm_config \
-    npm install --global npm@12.2.3 --ignore-scripts --no-audit --no-fund
-COPY package.json package-lock.json .npmrc ./
-
-FROM npm-base AS build
-RUN --mount=type=secret,id=npm_config,required=true \
-    NPM_CONFIG_USERCONFIG=/run/secrets/npm_config \
-    npm ci --include=dev --ignore-scripts --no-audit --no-fund
-COPY . .
-ARG BUILD_REVISION
-ARG BUILD_TIMESTAMP
-ARG BUILD_RUN_URL
-RUN --network=none npm run check && npm test && npm run build
-
-FROM npm-base AS prod-deps
-RUN --mount=type=secret,id=npm_config,required=true \
-    NPM_CONFIG_USERCONFIG=/run/secrets/npm_config \
-    npm ci --omit=dev --include=optional --ignore-scripts --no-audit --no-fund
-
-FROM ${NODE_IMAGE} AS runtime
-WORKDIR /app
-ENV NODE_ENV=production PORT=3000
-COPY --from=prod-deps /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/dist ./dist
-USER node
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
-  CMD ["node","-e","fetch('http://127.0.0.1:3000/healthz',{signal:AbortSignal.timeout(2000)}).then(r=>{if(!r.ok)process.exitCode=1},()=>{process.exitCode=1})"]
-CMD ["node","dist/server/main.js","--container"]
-```
+The [Containerfile](../../../Containerfile) uses a digest-pinned Debian/glibc Node 24.22.3 slim base, with npm 12.2.3 in the install stages only. Build for the target Linux architecture with Podman, not with host `node_modules`. The Bash smoke imports the same image into Rancher Desktop Moby without passing it feed credentials. The healthy probe uses a bounded Bash request to the local HTTP listener.
 
 ### Stage and artifact rules
 
 - **Build:** `npm run build` compiles `dist/web/index.html` and fingerprinted assets from Vite, plus `dist/server/main.js` and the migration files required by `openDatabase()` and `migrate()`. Keep migrations with the server output; do not require the source tree at runtime. Run type checks, unit tests, and browser fixture tests in CI, not in the final image. The metadata writer emits `dist/build.json` from the three public CI inputs. It validates the full commit SHA, UTC build time, and exact workflow run URL for `arolariu/software-factory`; invalid release inputs fail the build, while absent local inputs are `null`. `GET /api/build` serves this artifact, not container startup time. The UI links the revision to the GitHub commit and the timestamp to the producing run when present.
-- **Install:** supply the approved Microsoft registry via the BuildKit `npm_config` secret even when no credential is needed; a missing mount fails the build. CI validates the selected registry before building. The tracked `.npmrc` contains only `save-exact=true` and `omit-lockfile-registry-resolved=true`. Lock exact versions and integrity, reject registry `resolved` URLs and non-registry dependencies in the baseline, and do not fall back to another feed. No install scripts are needed in the foundation: SQLite ships a bundled glibc addon. If a later dependency needs a lifecycle script, explicitly approve it and run it only in a no-network stage with the feed config unmounted. Keep any compiler and headers outside the runtime, and prove the addon loads on each target architecture.
-- **Runtime:** retain only the built assets, compiled server and migrations, metadata, package type metadata, and Linux production modules. No source tree, compiler, browser test binaries, npm cache/config, fixtures, or credentials are copied into the runtime. The base image may include npm; the app is started directly by Node, not by `npm start`. Use a `.dockerignore` allowlist for the tracked build inputs (including the portable `.npmrc`); exclude `.git`, host `node_modules`, existing output, design artifacts, `.env` files, local credential/config files, and tests not needed by the build. CI must verify image contents independently.
+- **Install:** supply the approved Microsoft registry via Podman's `npm_config` build secret even when no credential is needed; a missing mount fails the build. CI validates the selected registry before building. The tracked `.npmrc` contains only `save-exact=true` and `omit-lockfile-registry-resolved=true`. Lock exact versions and integrity, reject registry `resolved` URLs and non-registry dependencies in the baseline, and do not fall back to another feed. No install scripts are needed in the foundation: SQLite ships a bundled glibc addon. If a later dependency needs a lifecycle script, explicitly approve it and run it only in a no-network stage with the feed config unmounted. Keep any compiler and headers outside the runtime, and prove the addon loads on each target architecture.
+- **Runtime:** retain only the built assets, compiled server and migrations, metadata, package type metadata, Bash health probe, and Linux production modules. No source tree, compiler, browser test binaries, npm cache/config, fixtures, or credentials are copied into the runtime. The base image may include npm; the app is started directly by Node. Use a `.containerignore` allowlist for tracked build inputs, including the portable `.npmrc`. CI verifies the final image contents independently.
 - **Later capabilities:** add the pinned Copilot SDK and needed platform optional packages only after runtime proof; add Git to the runtime only when the approved Azure DevOps path needs it. Git is not required for provider browsing. Keep any SDK writable state out of `/app`; a future adapter must explicitly separate temporary state from durable resume metadata. A Git worktree or the container boundary alone is not a sandbox.
 
 ## Deployment contract
@@ -68,7 +30,7 @@ CMD ["node","dist/server/main.js","--container"]
 | Boundary | Contract |
 | --- | --- |
 | Ingress | One Fastify listener on `0.0.0.0:3000`; terminate TLS at trusted ingress. This is the only app container; ingress is host/platform infrastructure. Configure the canonical HTTPS origin explicitly for OAuth redirects and Origin validation. Trust forwarded headers only from the configured proxy; do not expose the backend port directly to public clients. |
-| `/app` | Immutable artifact. Run as the image's unprivileged `node` user; provision mounts for its numeric UID/GID. Use a read-only root filesystem, drop Linux capabilities and enable no-new-privileges. Never use privileged mode or mount the Docker socket. |
+| `/app` | Immutable artifact. Run as the image's unprivileged `node` user; provision mounts for its numeric UID/GID. Use a read-only root filesystem, drop Linux capabilities and enable no-new-privileges. Never use privileged mode or mount the container engine socket. |
 | `/data` (required) | Pre-provision a writable host-local directory owned by the app user, mode `0700`, with one active Factory instance per data directory. Store SQLite with its WAL/SHM siblings, the separate encrypted credential store, and approved durable private state. Mount the directory, not just the DB file. The container refuses absent, shared, read-only, or alternate data locations rather than creating an ephemeral DB elsewhere. Do not place it on a network share or mount it into a task process. |
 | `/run/secrets` | Read-only runtime secrets with restricted file access, including the app encryption key and configured OAuth app secrets. Keep these out of the DB backup, image, build-time registry config, logs, and task environment. A deployment with configured provider auth must fail startup if required secret files are absent or unreadable. |
 | `/tmp` | Bounded writable tmpfs for temporary files if needed; never the location of the DB, credential store, or durable SDK resume state. |
@@ -92,4 +54,4 @@ Do not run overlapping replicas against the same `/data`, including during rollo
 | Replace and restore | Seed through test-only composition or a disposable database, replace the image with the same mounts, and verify persistence and migration compatibility. Restore an online backup on a fresh directory. Verify errors on missing mount or key as applicable. |
 | Drain and gate | Stop during an operation and confirm replacement reconciles rather than replaying an unknown effect. Check that the read image remains ready while SDK and Azure DevOps execution are disabled. Test isolation, identity, and stop confirmation separately before enabling live commands. |
 
-References: [Docker multi-stage builds](https://docs.docker.com/build/building/multi-stage/), [BuildKit secrets](https://docs.docker.com/build/building/secrets/), [Dockerfile reference](https://docs.docker.com/reference/dockerfile/), [SQLite WAL](https://sqlite.org/wal.html), [SQLite online backup](https://sqlite.org/backup.html).
+References: [Podman build](https://docs.podman.io/en/latest/markdown/podman-build.1.html), [Rancher Desktop container engines](https://docs.rancherdesktop.io/ui/preferences/container-engine/general/), [SQLite WAL](https://sqlite.org/wal.html), [SQLite online backup](https://sqlite.org/backup.html).

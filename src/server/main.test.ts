@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { runCli, startServer, verifyContainerData } from './main.js';
@@ -74,8 +75,13 @@ it('requires an exact /data mount and private permissions for container storage'
 });
 
 it('registers and removes process shutdown handlers for the CLI server', async () => {
+  const socket = createServer();
+  await new Promise<void>((resolve) => socket.listen(0, '127.0.0.1', resolve));
+  const port = socket.address();
+  if (!port || typeof port === 'string') throw new Error('Expected a TCP port.');
+  await new Promise<void>((resolve, reject) => socket.close((error) => error ? reject(error) : resolve()));
   const before = process.listenerCount('SIGTERM');
-  const server = await runCli({ FACTORY_DATA_DIR: dataDir, PORT: '0' }, [], artifactDir);
+  const server = await runCli({ FACTORY_DATA_DIR: dataDir, PORT: String(port.port) }, [], artifactDir);
   expect(server).toBeDefined();
   try {
     expect(process.listenerCount('SIGTERM')).toBe(before + 1);
@@ -95,6 +101,19 @@ it('returns a nonzero CLI status for unusable configuration', async () => {
   } finally {
     process.exitCode = previous;
     vi.unstubAllEnvs();
+    report.mockRestore();
+  }
+});
+
+it.each(['', ' ', '0'])('rejects CLI PORT=%j rather than using an unexpected ephemeral port', async (port) => {
+  const previous = process.exitCode;
+  const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const server = await runCli({ FACTORY_DATA_DIR: dataDir, PORT: port }, [], artifactDir);
+    await server?.close();
+    expect(process.exitCode).toBe(1);
+  } finally {
+    process.exitCode = previous;
     report.mockRestore();
   }
 });

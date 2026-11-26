@@ -4,7 +4,7 @@ Status: proposed
 
 ## Goal
 
-Deploy the Svelte portal and task API as one Docker image, with one running instance on a host with persistent local storage. An image replacement must not lose connected repo tabs, the mapping from issues to Copilot sessions, or the files needed to recover Azure DevOps runs. The image is replaceable; the installation is not stateless.
+Deploy the Svelte portal and task API as one Linux container image, with one running instance on a host with persistent local storage. An image replacement must not lose connected repo tabs, the mapping from issues to Copilot sessions, or the files needed to recover Azure DevOps runs. The image is replaceable; the installation is not stateless.
 
 GitHub tasks use native GitHub-hosted Copilot sessions. Azure DevOps tasks use the Copilot SDK on the factory host, with a separate worktree per task. Both use the requester's Copilot identity. Repository access and draft PR publication use the requester's repository-provider identity. The factory does not merge PRs.
 
@@ -12,7 +12,7 @@ GitHub tasks use native GitHub-hosted Copilot sessions. Azure DevOps tasks use t
 
 | Approach | Tradeoff |
 | --- | --- |
-| **Selected: one Docker container on a host with local disk** | One deployment and origin for the static assets, API, and sign-in callbacks. Needs an available host and persistent disk; no assumption of free compute. |
+| **Selected: one container on a host with local disk** | One deployment and origin for the static assets, API, and sign-in callbacks. Needs an available host and persistent disk; no assumption of free compute. |
 | Static frontend on Azure Static Web Apps Free plus a separate backend | Hosts the UI for free, but still needs a backend host and disk, and adds a deployment and cross-origin configuration. The Free plan cannot run this image or mount its volumes. |
 
 Defer multiple replicas, managed databases, full provider metadata sync, and support for arbitrary Git hosts.
@@ -87,7 +87,7 @@ The repository snapshot may include check totals, breakdown, PR revision, and fr
 ## Container layout
 
 ```text
-Browser ── HTTPS ──> one Docker container
+Browser ── HTTPS ──> one Linux container
                      ├─ static Svelte assets and same-origin task API
                      ├─ Copilot SDK adapter ──> GitHub-hosted sessions
                      ├─ repository adapters ──> GitHub and Azure DevOps

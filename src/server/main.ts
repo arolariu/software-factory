@@ -58,9 +58,11 @@ export async function startServer(options: StartupOptions) {
 
 export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
   try {
+    const port = Number(env.PORT ?? '3000');
+    if (port === 0) throw new Error('PORT must be a valid TCP port.');
     const server = await startServer({
       dataDir: env.FACTORY_DATA_DIR ?? '/data',
-      port: Number(env.PORT ?? '3000'),
+      port,
       artifactDir,
       container: args.includes('--container'),
       logger: true,

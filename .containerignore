@@ -28,6 +28,7 @@
 !scripts/
 !scripts/build-artifacts.sh
 !scripts/build-artifacts.test.ts
+!scripts/healthcheck.sh
 **/.env*
 **/*.sqlite*
 **/.npmrc

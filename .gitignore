@@ -3,6 +3,8 @@
 /test-results/
 /playwright-report/
 /coverage/
+/.smoke.*/
+/.vitest/
 /.worktrees/
 /data/
 /.env*

@@ -13,7 +13,7 @@
     "check": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.web.json",
     "test": "vitest run",
     "coverage": "vitest run --coverage && vitest run --config vitest.ui.config.ts --coverage",
-    "test:browser": "playwright test",
+    "test:browser": "node node_modules/@playwright/test/cli.js test",
     "start": "node dist/server/main.js"
   },
   "dependencies": {

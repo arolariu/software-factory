@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['{src/server,scripts}/**/*.test.ts'],
+    exclude: ['**/*.image.test.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/server/**/*.ts'],

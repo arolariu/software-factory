@@ -4,27 +4,30 @@ A light, desktop-first portal for repository triage and Copilot task tracking. T
 
 ## Run locally
 
-Use Node **24.22.3**, npm **12.2.3**, and the approved npm registry configured outside the repository. Install scripts are disabled for this dependency set; the pinned SQLite package bundles its native binary.
+Use Bash (Git Bash on Windows), Node **24.22.3**, npm **12.2.3**, and the approved npm registry configured outside the repository. Install scripts are disabled for this dependency set; the pinned SQLite package bundles its native binary.
 
-```powershell
+```bash
 npm ci --ignore-scripts --strict-peer-deps
 npm run check
 npm test
 npm run build
-New-Item -ItemType Directory -Path .\data -Force | Out-Null
-$env:FACTORY_DATA_DIR = (Resolve-Path .\data).Path
-npm start
+mkdir -p data
+FACTORY_DATA_DIR="$PWD/data" npm start
 ```
 
 Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api/build` returns artifact metadata (null fields for an unstamped local build). Use a private, writable data directory; SQLite stores its WAL and SHM alongside the database.
 
+## Test coverage
+
+Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. Shell and container behavior is tested separately.
+
 ## Verify the Linux image
 
-With Docker BuildKit and PowerShell 7, supply an npm config scoped to the approved registry as a build secret. Keep that file outside this repository. The smoke test builds the image, checks the running non-root server, replaces it with the same data volume, and restores an online SQLite backup into a fresh volume.
-For deployment, provision a host-local `/data` mount owned by UID/GID `1000:1000` with mode `0700`; the container refuses to use an alternate or shared data directory. Update `.dockerignore` when adding build inputs.
+Supply an npm config scoped to the approved registry outside this repository. The smoke script builds the `Containerfile` with Podman and tests non-root startup, replacement, and online SQLite backup/restore. `both` additionally loads the exact image into an already-running Rancher Desktop **Moby** engine through `rdctl`, without switching engines or invoking a Docker CLI. The Windows path uses the running Podman machine and the shared Windows drive. Do not point either test at a production engine.
 
-```powershell
-.\tests\backend\container-smoke.ps1 -NpmConfig $npmConfigPath -DockerContext default
+```bash
+bash scripts/container-smoke.sh podman "$npm_config_path"
+bash scripts/container-smoke.sh both "$npm_config_path" --browser
 ```
 
-For a browser check at 1080 × 720, first install the pinned Playwright Chromium (`npm exec -- playwright install chromium`) and pass `-Browser`. See the [container specification](docs/superpowers/specs/2026-11-26-docker-image-design.md) for production mount, ingress, and recovery requirements.
+`--browser` uses the pinned Chromium to check the Podman-hosted app at 1080 × 720. For deployment, provision host-local `/data` owned by UID/GID `1000:1000` with mode `0700`. Update `.containerignore` when adding build inputs. See the [container specification](docs/superpowers/specs/2026-11-26-docker-image-design.md) for ingress and recovery requirements.
