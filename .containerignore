@@ -9,6 +9,12 @@
 !playwright.config.ts
 !src/
 src/**
+!src/shared/
+src/shared/**
+!src/shared/api/
+src/shared/api/**
+!src/shared/api/schemas.ts
+!src/shared/api/schemas.test.ts
 !src/server/
 src/server/**
 !src/server/build-app.ts

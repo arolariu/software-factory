@@ -6,6 +6,6 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/server/**/*.ts"],
-  "exclude": ["src/server/**/*.test.ts"]
+  "include": ["src/server/**/*.ts", "src/shared/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }
