@@ -5,6 +5,14 @@ type Result<T> = T | Promise<T>;
 type Read<K extends keyof typeof ApiSchemas, A extends unknown[] = []> =
   (requester: Requester, ...args: A) => Result<ApiDto<K>>;
 export type AuthorizationProvider = ApiDto<'providerPath'>['provider'];
+export type AcceptedTask = ApiDto<'taskAccepted'>;
+export type AcceptedOperation = ApiDto<'operationAccepted'>;
+export type GatedEffect =
+  | { kind: 'start'; connectionId: string; input: ApiDto<'startTask'> }
+  | { kind: 'input'; taskId: string }
+  | { kind: 'archive'; taskId: string }
+  | { kind: 'remove'; connectionId: string }
+  | { kind: 'close'; connectionId: string; workItemKey: string };
 
 export interface PortalModules {
   identity: {
@@ -25,6 +33,7 @@ export interface PortalModules {
     issue: Read<'issue', [string, string, ApiDto<'issueDetailQuery'>]>;
     pullRequests: Read<'pullRequests', [string, ApiDto<'prQuery'>]>;
     checks: Read<'checks', [string, string, ApiDto<'checkQuery'>]>;
+    closeIssue: Read<'issueClosed', [string, string, ApiDto<'closeIssue'>]>;
   };
   tasks: {
     tasks: Read<'tasks', [string, ApiDto<'taskQuery'>]>;
@@ -34,9 +43,15 @@ export interface PortalModules {
     activity: Read<'activity', [string, ApiDto<'paging'>]>;
     options: Read<'taskOptions', [string, ApiDto<'optionsQuery'>]>;
     statistics: Read<'statistics'>;
+    start: Read<'taskAccepted', [string, ApiDto<'startTask'>]>;
   };
   operations: {
     read: Read<'operation', [string]>;
+    authorizeEffect(requester: Requester, effect: GatedEffect): Result<void>;
+    sync: Read<'operationAccepted', [string]>;
+    input: Read<'operationAccepted', [string, ApiDto<'taskInput'>]>;
+    archive: Read<'operationAccepted', [string]>;
+    remove: Read<'operationAccepted', [string]>;
   };
 }
 

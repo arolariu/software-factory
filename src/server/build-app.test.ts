@@ -89,7 +89,7 @@ describe('Fastify foundation', () => {
   it('does not rewrite API, auth, asset errors, or unsafe requests to the SPA', async () => {
     const server = await makeApp();
     for (const [method, url] of [
-      ['GET', '/api'], ['GET', '/api/absent'], ['GET', '/auth/github/callback'],
+      ['GET', '/api'], ['GET', '/api/absent'], ['GET', '/auth/github/missing'],
       ['GET', '/assets/absent.js'], ['GET', '/missing.css'], ['POST', '/connections/example'],
     ] as const) {
       const response = await server.inject({ method, url, headers: { accept: 'text/html' } });

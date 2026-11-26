@@ -70,6 +70,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     logController: new LogController({ disableRequestLogging: true }),
     requestIdHeader: false,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } },
+    frameworkErrors: sendProblem,
   });
   app.register(fastifyStatic, {
     root: assetsRoot,

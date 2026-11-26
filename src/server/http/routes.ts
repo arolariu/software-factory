@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 
 import type { TSchema } from 'typebox';
 import Value from 'typebox/value';
 import { ApiSchemas as s, type ApiDto } from '../../shared/api/schemas.js';
-import type { PortalModules, PortalOptions, Requester } from './portal-modules.js';
+import type { GatedEffect, PortalModules, PortalOptions, Requester } from './portal-modules.js';
 import { ApiFailure, sendProblem } from './problems.js';
 
 const cookieName = 'factory_session';
@@ -15,9 +15,16 @@ type Part = keyof typeof s;
 type Parsed<K> = K extends Part ? ApiDto<K> : unknown;
 type Parts<P, Q, B> = { params?: P; querystring?: Q; body?: B };
 
-function json(reply: FastifyReply, schema: TSchema, output: unknown, status = 200) {
+function json(reply: FastifyReply, schema: TSchema, output: unknown) {
   if (!Value.Check(schema, output)) throw new ApiFailure('INTERNAL_ERROR');
-  return reply.code(status).send(output);
+  return reply.send(output);
+}
+
+function accepted(reply: FastifyReply, kind: 'tasks' | 'operations', result: unknown) {
+  const schema = kind === 'tasks' ? s.taskAccepted : s.operationAccepted;
+  if (!Value.Check(schema, result)) throw new ApiFailure('INTERNAL_ERROR');
+  const id = 'taskId' in result ? result.taskId : result.operationId;
+  return reply.header('Location', `/api/${kind}/${encodeURIComponent(id)}`).code(202).send(result);
 }
 
 function sessionId(request: FastifyRequest): string | undefined {
@@ -71,6 +78,7 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
   ): void {
     app.route<{ Params: Parsed<P>; Querystring: Parsed<Q>; Body: Parsed<B> }>({
       method, url,
+      ...(method === 'GET' && { exposeHeadRoute: false }),
       schema: {
         querystring: s[parts.querystring ?? 'empty'],
         ...(parts.params && { params: s[parts.params] }),
@@ -125,7 +133,7 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
     const session = sessionId(request);
     if (!session) throw new ApiFailure('AUTH_REQUIRED');
     const result = await modules().identity.completeAuthorization(request.params.provider, session, {
-      state: request.query.state, code: 'code' in request.query ? request.query.code : null,
+      state: request.query.state, code: request.query.code ?? null,
     });
     const target = portalPath(result.redirectTo);
     if (result.sessionId !== undefined) setSession(reply, result.sessionId);
@@ -160,4 +168,47 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
   read('/api/connections/:id/task-options', { params: 'byId', querystring: 'optionsQuery' }, 'taskOptions',
     (m, p, r) => m.tasks.options(p, r.params.id, r.query));
   read('/api/statistics', {}, 'statistics', (m, p) => m.tasks.statistics(p));
+
+  async function command(request: FastifyRequest, effect?: GatedEffect) {
+    const principal = await requester(request);
+    await verifyUnsafe(request);
+    const ports = modules();
+    if (effect) await ports.operations.authorizeEffect(principal, effect);
+    return { principal, ports };
+  }
+
+  route('PUT', '/api/copilot/accounts/default', { body: 'copilotDefault' }, async (request, reply) => {
+    const { principal, ports } = await command(request);
+    await ports.identity.setDefaultCopilotAccount(principal, request.body.accountId);
+    return reply.code(204).send();
+  });
+  route('POST', '/api/connections/:id/sync', { params: 'byId', body: 'empty' }, async (request, reply) => {
+    const { principal, ports } = await command(request);
+    return accepted(reply, 'operations', await ports.operations.sync(principal, request.params.id));
+  });
+  route('POST', '/api/connections/:id/tasks', { params: 'byId', body: 'startTask' }, async (request, reply) => {
+    const connectionId = request.params.id;
+    const { principal, ports } = await command(request, { kind: 'start', connectionId, input: request.body });
+    return accepted(reply, 'tasks', await ports.tasks.start(principal, connectionId, request.body));
+  });
+  route('POST', '/api/tasks/:id/inputs', { params: 'byId', body: 'taskInput' }, async (request, reply) => {
+    const taskId = request.params.id;
+    const { principal, ports } = await command(request, { kind: 'input', taskId });
+    return accepted(reply, 'operations', await ports.operations.input(principal, taskId, request.body));
+  });
+  route('POST', '/api/tasks/:id/archive', { params: 'byId', body: 'confirmed' }, async (request, reply) => {
+    const taskId = request.params.id;
+    const { principal, ports } = await command(request, { kind: 'archive', taskId });
+    return accepted(reply, 'operations', await ports.operations.archive(principal, taskId));
+  });
+  route('POST', '/api/connections/:id/remove', { params: 'byId', body: 'confirmed' }, async (request, reply) => {
+    const connectionId = request.params.id;
+    const { principal, ports } = await command(request, { kind: 'remove', connectionId });
+    return accepted(reply, 'operations', await ports.operations.remove(principal, connectionId));
+  });
+  route('POST', '/api/connections/:id/issues/:key/close', { params: 'byKey', body: 'closeIssue' }, async (request, reply) => {
+    const { id: connectionId, key: workItemKey } = request.params;
+    const { principal, ports } = await command(request, { kind: 'close', connectionId, workItemKey });
+    return json(reply, s.issueClosed, await ports.repositories.closeIssue(principal, connectionId, workItemKey, request.body));
+  });
 }

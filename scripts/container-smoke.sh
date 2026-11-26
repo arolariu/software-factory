@@ -210,7 +210,7 @@ verify_engine() {
   script_path=$(grep -oE '/assets/[^" ]+\.js' <<< "$html")
   [[ -n $(curl_portal -fsS "$origin$script_path") ]]
   curl_portal -fsS "$origin/api/build" | grep -q '"revision":null,"builtAt":null,"runUrl":null'
-  for path in /api/missing /auth/github/callback /assets/missing.js "/$token.txt"; do
+  for path in /api/missing /auth/github/missing /assets/missing.js "/$token.txt"; do
     code=$(curl_portal -sS -o "$null_device" -w '%{http_code}' -H 'Accept: text/html' "$origin$path")
     [[ $code == 404 ]]
   done

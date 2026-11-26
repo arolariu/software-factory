@@ -14,6 +14,8 @@ it('strictly validates task starts, paging, and purpose-specific authorization i
   for (const extra of ['issuer', 'authorizationUrl', 'token', 'connectionId']) {
     expect(Value.Check(s.authorizationIntent, { ...intent, [extra]: 'unexpected' })).toBe(false);
   }
+  expect(Value.Check(s.authorizationIntent, { intent: 'connect', repositoryUrl: 'https://github.com/org/repo' })).toBe(true);
+  expect(Value.Check(s.authorizationIntent, { intent: 'connect', repositoryUrl: 'https://user:secret@github.com/repo' })).toBe(false);
 });
 
 it('preserves nullable titles and distinguishes inaccessible data from known empty data', () => {

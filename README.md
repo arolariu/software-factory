@@ -1,6 +1,6 @@
 # Software Factory
 
-A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and a Fastify API from one Linux container. Provider sign-in, browsing, and task execution are not enabled in this milestone.
+A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and a Fastify API from one Linux container. The [internal API](docs/superpowers/specs/2026-11-26-internal-api-design.md) is tested with injected adapters only. The shipping app does not configure those adapters or enable live sign-in, repository browsing, or task execution.
 
 ## Run locally
 

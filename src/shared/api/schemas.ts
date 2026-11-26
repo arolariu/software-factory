@@ -7,7 +7,7 @@ const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null
 const id = Type.String({ minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$' });
 const text = Type.String();
 const nonempty = Type.String({ minLength: 1 });
-const url = Type.String({ pattern: '^https://[^\\s/]+(?:[/?#][^\\s]*)?$', maxLength: 4096 });
+const url = Type.String({ format: 'uri', pattern: '^https://[^\\s/@\\\\?#]+(?:[/?#][^\\s\\\\]*)?$', maxLength: 4096 });
 const at = Type.String({
   format: 'date-time',
   pattern: '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?Z$',
@@ -82,8 +82,8 @@ export const ApiSchemas = {
   taskQuery: object({ state: Type.Literal('active'), ...pagination }),
   optionsQuery: object({ copilotAccountId: Type.Optional(id) }),
   callbackQuery: Type.Union([
-    object({ state: cursor, code: nonempty }),
-    object({ state: cursor, error: nonempty, error_description: Type.Optional(text), error_uri: Type.Optional(text) }),
+    Type.Object({ state: cursor, code: nonempty, error: Type.Optional(Type.Never()) }),
+    Type.Object({ state: cursor, error: nonempty, code: Type.Optional(Type.Never()) }),
   ]),
   health: object({ status: names('ok', 'unavailable') }),
   build: object({ revision: nullable(Type.String({ pattern: '^[a-f0-9]{40}$' })), builtAt: nullable(at), runUrl: nullable(url) }),
@@ -177,7 +177,7 @@ export const ApiSchemas = {
   closeIssue: object({ confirmed: Type.Literal(true), expectedRevision: Type.Optional(id) }),
   taskAccepted: object({ taskId: id, state: Type.Literal('queued') }),
   operationAccepted: object({ operationId: id }),
-  issueClosed: object({ issue: issueRow }),
+  issueClosed: object({ issue: object({ ...issueRow.properties, state: Type.Literal('closed') }) }),
 } as const;
 
 export type ApiDto<K extends keyof typeof ApiSchemas> = Static<(typeof ApiSchemas)[K]>;
