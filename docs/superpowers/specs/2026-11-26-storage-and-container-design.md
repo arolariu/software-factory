@@ -17,6 +17,8 @@ GitHub tasks use native GitHub-hosted Copilot sessions. Azure DevOps tasks use t
 
 Defer multiple replicas, managed databases, full provider metadata sync, and support for arbitrary Git hosts.
 
+For repo data, the selected approach is **mappings plus last-known lists per connection**. Keeping only mappings would simplify caching and revocation, but every first load would wait on the provider and an outage would leave the repo tab empty.
+
 ## Container layout
 
 ```text
@@ -37,11 +39,13 @@ Keep encrypted user credentials separate from the task index, in private applica
 
 The initial deployment is for a trusted installation, not a public multi-tenant runner. Worktrees separate edits; they do **not** isolate code execution. The Azure DevOps path requires sandboxing that prevents task commands from reading application data, secrets, other tasks' workspaces, or host files. Do not use privileged mode or mount the Docker socket. If the host cannot provide verified isolation within this package, disable Azure DevOps execution on that host rather than running commands in the API's security context. GitHub-hosted runs do not depend on the factory's worktree storage.
 
+For Azure DevOps, the repository adapter clones on first use and fetches on later starts, using the requester's current read authorization. The clone is a backend-owned seed, not a workspace exposed to the agent. Prepare a private Git copy from the selected base commit and create the task's worktree from that copy inside the sandbox. A linked worktree shares Git refs and configuration with its parent; do not attach an agent worktree directly to a seed clone shared by other tasks. Store the task's base commit and workspace reference in private runtime state for resume. Sync refreshes portal data; it does not alter a running task's checkout.
+
 ## SQLite schema
 
 `users` is the portal principal. `identities` stores the provider accounts linked to it, keyed by verified issuer and subject. `repositories` identifies a repo using its provider's stable ID in a stable scope, not the pasted URL or repo name. `repo_connections` is the per-user authorization link and tab. `tasks` owns the issue-to-session mapping. One task gets at most one Copilot session; a new attempt after a terminal result gets a new task.
 
-Keep issues, PR statuses, and transcripts in their upstream systems. `work_item_key` is the issue number in a GitHub repo or the Azure DevOps work-item ID in the repo's organization. Azure Boards work items are not intrinsically repo-scoped; a repo tab can show project work items, labeled as such, while a task explicitly pairs one with the selected repo. For v1, that pair defines the one-active-task constraint.
+Upstream providers remain authoritative for issues and PRs. SQLite keeps a last-known snapshot of the issue and PR lists for each authorized repo connection, not a full mirror. Store only the fields needed to render the lists and verified links; keep issue bodies, comments, diffs, and transcripts out of snapshots. `work_item_key` is the issue number in a GitHub repo or the Azure DevOps work-item ID in the repo's organization. Azure Boards work items are not intrinsically repo-scoped; a repo tab can show project work items, labeled as such, while a task explicitly pairs one with the selected repo. For v1, that pair defines the one-active-task constraint.
 
 Enable foreign keys for every connection and WAL on the local database. Example initial schema (`*_at` are UTC Unix milliseconds):
 
@@ -81,6 +85,18 @@ CREATE TABLE repo_connections (
   FOREIGN KEY (identity_id, user_id) REFERENCES identities(id, user_id)
 );
 
+CREATE TABLE repo_snapshots (
+  repo_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  identity_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('work_items', 'pull_requests')),
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+  fetched_at INTEGER NOT NULL,
+  PRIMARY KEY (repo_id, user_id, kind),
+  FOREIGN KEY (repo_id, user_id) REFERENCES repo_connections(repo_id, user_id),
+  FOREIGN KEY (identity_id, user_id) REFERENCES identities(id, user_id)
+);
+
 CREATE TABLE tasks (
   id TEXT NOT NULL PRIMARY KEY,
   repo_id TEXT NOT NULL,
@@ -91,8 +107,10 @@ CREATE TABLE tasks (
   start_request_id TEXT NOT NULL,
   runtime_kind TEXT NOT NULL CHECK (runtime_kind IN ('github_cloud', 'ado_worktree')),
   runtime_scope TEXT NOT NULL,
+  requested_session_id TEXT,
   sdk_session_id TEXT,
   session_url TEXT,
+  draft_pr_key TEXT,
   draft_pr_url TEXT,
   state TEXT NOT NULL CHECK (state IN (
     'queued', 'starting', 'running', 'waiting_input', 'publishing',
@@ -108,6 +126,7 @@ CREATE TABLE tasks (
   FOREIGN KEY (repo_identity_id, requester_id) REFERENCES identities(id, user_id),
   FOREIGN KEY (copilot_identity_id, requester_id) REFERENCES identities(id, user_id),
   UNIQUE (requester_id, start_request_id),
+  UNIQUE (runtime_kind, runtime_scope, requested_session_id),
   UNIQUE (runtime_kind, runtime_scope, sdk_session_id)
 );
 
@@ -119,9 +138,23 @@ CREATE INDEX tasks_by_tab
   ON tasks (requester_id, repo_id, created_at DESC);
 ```
 
-`runtime_scope` names the stable session namespace used to resume or reconcile that SDK session, not a transient process ID. It is set at task creation and the actual SDK ID is recorded as soon as the runtime returns it. Cloud session URLs and draft PR URLs are added when known, not used as keys.
+`runtime_scope` names the stable session namespace used to resume or reconcile that SDK session, not a transient process ID. It is set at task creation and the actual SDK ID is recorded as soon as the runtime returns it. `draft_pr_key` stores the provider's repo-scoped PR identifier. Session and draft PR URLs are for navigation, not matching.
 
 The API validates the provider for each identity and execution path, checks live repository authorization, canonicalizes work-item keys, and rechecks that the issue is open and has no linked PR before launch. Foreign keys prevent attaching another user's provider identity; they do not substitute for those checks. A reconnect may restore access but must not silently change the identities captured on an existing task. Read-only **Unlinked** sessions are discovered under the current user's identity when the SDK exposes them; do not create rows for them or infer issue links.
+
+## Per-repository sync
+
+**Sync** is read-only upstream. It does not start or stop a session, push code, create a PR, or change an issue. At most one sync runs per repo connection. Fetch the authorized work-item list, PR list, and discoverable Copilot sessions as separate sources. Replace a source's snapshot only after all pages for that refresh were retrieved; a successful empty list replaces old rows, whereas a failed or incomplete fetch does not. Merge verified task changes without allowing an older sync to overwrite newer state from the active runtime. A missing session in discovery is not proof that it stopped or was deleted.
+
+For launch and reconciliation:
+
+1. Reserve a factory task ID and its repo/work-item mapping before calling Copilot. Request an opaque session ID derived from the task ID where supported, and record the returned SDK ID regardless. Use documented repo association and integration attribution as context, not as per-task keys. If the pinned runtime supports discoverable per-session metadata, add a versioned opaque factory task reference; do not put issue text, credentials, or user identifiers in it. Verify create/list round-tripping on each runtime before relying on it.
+2. Look up owned tasks by the exact returned SDK ID in the correct runtime namespace. Recover a missing ID only when the runtime confirms a pre-reserved ID in that namespace, or the backend can verify a factory-issued correlation reference against its existing task. A session title, prompt, timestamp, or repo match alone is not evidence. Leave unresolved sessions in **Unlinked**; do not silently import them as tasks.
+3. Retain the exact PR reference returned by publication and refresh its state from the provider. Use provider-confirmed issue/work-item links to show related PRs, but do not infer that a session authored a PR merely because both point to the same issue. If publication may have succeeded but the response was lost, reconcile the exact publication reference before trying again.
+
+In the portal, show a skeleton only when there is no snapshot. Keep last-known rows visible while Sync runs, mark each source's freshness, and show a partial success when a source fails. Persist the per-source freshness with the snapshot. A cache read must use the current portal user and the repo connection's active identity. Evict or hide snapshots on disconnect, identity change, or confirmed authorization failure; only serve stale data for a transient failure under the same valid connection. Discard late refresh results from a superseded or revoked connection.
+
+Sync can repair missing fields on existing mappings; it cannot promise reconstruction after losing SQLite, since session discovery and metadata round-tripping vary by runtime. SQLite backup and restore preserve the authoritative mapping.
 
 ## Restart and removal behavior
 
@@ -135,7 +168,8 @@ The API validates the provider for each identity and execution path, checks live
 1. Replacing the container on the same host preserves repo tabs and mappings; a known cloud session reconnects, and an interrupted Azure DevOps task is recoverable or clearly marked as not running.
 2. Concurrent launches on the same repo/item create at most one active task. Retries do not duplicate a Copilot session or a draft PR. Switching repo tabs or accounts cannot expose another user's connections, tasks, or credentials.
 3. The Azure DevOps process can modify its own worktree but cannot access `/data`, `/run/secrets`, or a sibling worktree. Publication uses the requester's provider identity and leaves review and merge to the team.
+4. Sync is safe to repeat. A partial failure preserves only the affected source's prior snapshot, an authoritative empty result clears it, and revocation hides it. Missing or ambiguous Copilot discovery never creates a false task-to-issue or task-to-PR link.
 
 The builder can choose the API framework, SQLite driver, image base, sandbox mechanism, and event transport. Do not scaffold or deploy anything from this design until it is approved.
 
-References: [Azure Static Web Apps plans](https://learn.microsoft.com/en-us/azure/static-web-apps/plans), [SQLite WAL](https://sqlite.org/wal.html), [Copilot SDK cloud sessions](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/cloud-sessions), [Azure DevOps Copilot app support](https://docs.github.com/en/copilot/how-tos/github-copilot-app/manage-azure-devops-work).
+References: [Azure Static Web Apps plans](https://learn.microsoft.com/en-us/azure/static-web-apps/plans), [SQLite WAL](https://sqlite.org/wal.html), [Copilot SDK cloud sessions](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/cloud-sessions), [Azure DevOps Copilot app support](https://docs.github.com/en/copilot/how-tos/github-copilot-app/manage-azure-devops-work), [Git worktrees](https://git-scm.com/docs/git-worktree).
