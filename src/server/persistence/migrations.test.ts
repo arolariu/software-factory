@@ -10,9 +10,9 @@ it('rejects migration gaps and downgrades without overwriting the existing versi
   const db = openDatabase(join(directory, 'data.sqlite'));
   try {
     expect(() => migrate(db, [{ version: 2, sql: 'SELECT 1' }])).toThrow('contiguous');
-    db.pragma('user_version = 3');
+    db.pragma('user_version = 4');
     expect(() => migrate(db)).toThrow('newer image');
-    expect(db.pragma('user_version', { simple: true })).toBe(3);
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
   } finally {
     db.close();
     expect(hasCurrentSchema(db)).toBe(false);

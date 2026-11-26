@@ -31,6 +31,14 @@ src/server/http/**
 src/server/persistence/**
 !src/server/persistence/001-foundation.sql
 !src/server/persistence/002-identity.sql
+!src/server/persistence/003-repository-sync.sql
+!src/server/repositories/
+src/server/repositories/**
+!src/server/repositories/provider.ts
+!src/server/repositories/adapters.ts
+!src/server/repositories/adapters.test.ts
+!src/server/repositories/sync.ts
+!src/server/repositories/sync.test.ts
 !src/server/identity/
 src/server/identity/**
 !src/server/identity/credentials.ts
