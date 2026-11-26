@@ -39,6 +39,8 @@ Clicking the header's **Active sessions** count opens a dedicated main-area view
 
 Each session row has **View issue**, **View task**, and **Archive task** buttons. View issue opens the linked provider issue or work item in a new tab. View task opens the same inline task accordion used in the repo's Active tasks pane, keyed to the row's task rather than the selected repo. Archive task asks for **Stop and archive** confirmation. Keep the row visible until the runtime confirms the stop and the factory archives the task. Then remove it from both active lists and refresh the header count. Archiving does not delete the upstream issue, PR, or GitHub-hosted session.
 
+In the cross-repository session view, put **Needs your answer** before the other running work and show the count for each group. Only sessions with a pending human question belong in the first group. Keep per-row repo context and controls available in both groups.
+
 ```text
 [ Signed in as Sam ]  [ owner/repo ] [ org/project/ado-repo ] [+ New connection]   [ Usage ]
 Repo settings       | Active tasks | Open issues | Active PRs | Closed PRs | Closed issues   [Sync]
@@ -49,6 +51,10 @@ Build SHA / UTC     | > #43  Retry stalled imports
 ```
 
 In Svelte, keep the application shell mounted across repo navigation. Put the selected connection and work view in the URL so reload and browser history work; keep fetched data and loading state keyed by connection and view to avoid showing one repo's data under another tab. Keep the header summary separate from the repo snapshots. Proposed scope: active sessions and AI credits for the signed-in user's factory tasks across repos, not an account-wide GitHub billing total. Use backend-confirmed session state and measured SDK usage when available; distinguish unavailable or partial usage from zero. Read build info from deployment metadata rather than the selected repository.
+
+The **Open issues** toolbar combines title or issue-number search with **Anyone**, **Assigned to me**, or **Unassigned** filters. Keep filters scoped to the repo, show visible versus total counts, and offer **Clear filters** when nothing matches. Use stable provider assignee IDs for **Assigned to me** in the live portal. Filtering must not change launch eligibility or add status badges to the collapsed rows.
+
+In **Statistics**, show completed tasks and measured AI credits by week, with labeled values as well as a visual comparison. State the date range separately from all-time totals and explain missing usage rather than plotting it as zero.
 
 The build footer links the short SHA to the full commit in the public `arolariu/software-factory` GitHub repository. The UTC build timestamp links to the exact GitHub Actions run that produced the deployed artifact, including the run attempt when applicable. Bake the actual checked-out revision, build timestamp, and producer run URL into the artifact at build time; use the producing workflow's `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`, not the most recent run or the deployment job. If a local preview has no published commit or producer run, show the available provenance as plain text without inventing a destination.
 
