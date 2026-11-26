@@ -29,6 +29,8 @@ Within each repository, show **Active tasks**, **Open issues**, **Active PRs**, 
 
 The desktop shell follows the Paint sketch: identity pill at top left, connected repo tabs and **New connection** in the header, and two stacked metrics at top right: active Copilot sessions above total AI credits used through the factory. The left rail contains **Repo settings**, **Factory settings**, and **Copilot settings**, with the deployment's short commit SHA and build timestamp at the bottom. The main area owns the selected repository's work views and **Sync**. Repo settings follow the selected connection; factory settings do not. Copilot settings are distinct from the one-run overrides on an issue.
 
+The identity pill shows the active GitHub account's profile avatar, with a fallback when it is unavailable. Clicking the pill opens a popover with the same factory-only AI credits total as the header and separate options to switch GitHub or Azure DevOps accounts through interactive sign-in. Change the active account only after authorization succeeds. Reload identity-scoped data for the new account and never move existing tasks or their credentials to it.
+
 Each settings entry opens its own navigable view in the main area, not a side pane. Keep the shell visible, indicate the current entry, and let browser Back return to the previous repo view. **Repo settings** are scoped to a connection (authorization, sync, removal). **Factory settings** are scoped to the installation. **Copilot settings** are scoped to the signed-in user's account and task defaults. The mockup fields illustrate those scopes; they do not establish a settings API or permissions model.
 
 ```text
