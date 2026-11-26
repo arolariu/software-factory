@@ -10,7 +10,7 @@
   "packageManager": "npm@12.2.3",
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json && bash scripts/build-artifacts.sh",
-    "check": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.web.json",
+    "check": "tsc --noEmit && tsc -p tsconfig.test.json && svelte-check --tsconfig ./tsconfig.web.json",
     "test": "vitest run",
     "coverage": "vitest run --coverage && vitest run --config vitest.ui.config.ts --coverage",
     "test:browser": "node node_modules/@playwright/test/cli.js test",

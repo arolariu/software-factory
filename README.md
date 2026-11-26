@@ -21,6 +21,8 @@ Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api
 
 Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. The container smoke checks the built application, not the Bash helpers themselves.
 
+`npm run check` uses the shared strict TypeScript settings for the server, Svelte, tests, and tooling, including declaration-file checks. The compiler is pinned to the newest stable release supported by `svelte-check`; see the [dependency baseline](docs/superpowers/specs/2026-11-26-npm-dependencies.md#exact-pins).
+
 ## Verify the Linux image
 
 Supply an npm config scoped to the approved registry outside this repository. The smoke script builds the `Containerfile` with Podman and tests non-root startup, replacement, and online SQLite backup/restore. `both` additionally loads the exact image into an already-running Rancher Desktop **Moby** engine through `rdctl`, without switching engines or invoking a Docker CLI. The Windows path uses the running Podman machine and the shared Windows drive. Do not point either test at a production engine.

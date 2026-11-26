@@ -21,7 +21,7 @@ export function verifyContainerData(dataDir: string, mode: number, mountInfo: st
 }
 
 export async function startServer(options: StartupOptions) {
-  const { port, artifactDir } = options;
+  const { port, artifactDir, logger = false } = options;
   const dataDir = resolve(options.dataDir);
   if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) {
     throw new Error('PORT must be a valid TCP port.');
@@ -38,7 +38,7 @@ export async function startServer(options: StartupOptions) {
   try {
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
-    const app = await buildApp({ db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger: options.logger });
+    const app = await buildApp({ db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger });
     const address = await app.listen({ host: '0.0.0.0', port });
     const close = async () => {
       if (draining) return;
@@ -58,10 +58,10 @@ export async function startServer(options: StartupOptions) {
 
 export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
   try {
-    const port = Number(env.PORT ?? '3000');
+    const port = Number(env['PORT'] ?? '3000');
     if (port === 0) throw new Error('PORT must be a valid TCP port.');
     const server = await startServer({
-      dataDir: env.FACTORY_DATA_DIR ?? '/data',
+      dataDir: env['FACTORY_DATA_DIR'] ?? '/data',
       port,
       artifactDir,
       container: args.includes('--container'),
@@ -81,6 +81,7 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
   } catch (error) {
     console.error('Software Factory failed to start:', error);
     process.exitCode = 1;
+    return undefined;
   }
 }
 

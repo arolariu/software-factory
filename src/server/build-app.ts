@@ -24,20 +24,22 @@ function isPageNavigation(request: FastifyRequest): boolean {
   const mode = request.headers['sec-fetch-mode'];
   if (mode && mode !== 'navigate') return false;
   const acceptsHtml = request.headers.accept?.toLowerCase().split(',').some((entry) => {
-    const [mediaType, ...parameters] = entry.split(';');
+    const mediaType = entry.slice(0, entry.search(/;|$/)).trim();
+    const parameters = entry.split(';').slice(1);
     const quality = parameters.find((parameter) => /^\s*q\s*=/.test(parameter));
-    return mediaType.trim() === 'text/html' && (quality === undefined || Number(quality.split('=')[1]) > 0);
+    return mediaType === 'text/html' && (quality === undefined || Number(quality.split('=')[1]) > 0);
   });
   if (!acceptsHtml) return false;
   let pathname: string;
   try {
     const target = request.url;
-    pathname = decodeURIComponent(target.startsWith('/') ? target.split('?')[0] : new URL(target).pathname);
+    pathname = decodeURIComponent(target.startsWith('/') ? target.slice(0, target.search(/\?|$/)) : new URL(target).pathname);
   } catch {
     return false;
   }
   const segments = pathname.split('/').filter(Boolean);
-  return !['api', 'auth', 'healthz', 'assets'].includes(segments[0]?.toLowerCase()) &&
+  const firstSegment = (segments[0] ?? '').toLowerCase();
+  return !['api', 'auth', 'healthz', 'assets'].includes(firstSegment) &&
     !segments.some((segment) => segment.includes('.'));
 }
 

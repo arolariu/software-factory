@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 async function makeApp(isDraining?: () => boolean) {
-  app = await buildApp({ db, staticRoot: directory, build, isDraining });
+  app = await buildApp({ db, staticRoot: directory, build, ...(isDraining && { isDraining }) });
   return app;
 }
 
