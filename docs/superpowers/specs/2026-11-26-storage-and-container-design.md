@@ -35,6 +35,8 @@ Each settings entry opens its own navigable view in the main area, not a side pa
 
 **Statistics** is a separate main-area view across the signed-in user's authorized repository connections, independent of the selected tab. The mockup shows active and completed tasks, finished outcomes, published draft PRs, and credits by repository. Use the same task records and measured usage as the header; do not expose other users' activity or present unknown usage as zero.
 
+Clicking the header's **Active sessions** count opens a dedicated main-area view of active Copilot sessions started by Software Factory, across all authorized repository connections, regardless of the selected tab. Each row shows the linked task or issue, session status, and repository name and provider. Read the persisted factory task-to-session mappings and current session state; exclude unlinked sessions, terminal sessions, and queued tasks that do not have a session yet. The header count uses the same scope. Returning to the repository view preserves its selected pane.
+
 ```text
 [ Signed in as Sam ]  [ owner/repo ] [ org/project/ado-repo ] [+ New connection]   [ Usage ]
 Repo settings       | Active tasks | Open issues | Active PRs | Closed PRs | Closed issues   [Sync]
