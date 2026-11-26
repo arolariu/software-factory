@@ -19,6 +19,8 @@ Defer multiple replicas, managed databases, full provider metadata sync, and sup
 
 For repo data, the selected approach is **mappings plus last-known lists per connection**. Keeping only mappings would simplify caching and revocation, but every first load would wait on the provider and an outage would leave the repo tab empty.
 
+For removal, the selected approach is **explicit stop and remove**. Blocking removal until every task is handled separately protects unfinished work, but makes it harder to reclaim disk space. The confirmation makes that tradeoff visible without turning ordinary tab switching into a destructive action.
+
 ## Container layout
 
 ```text
@@ -80,7 +82,11 @@ CREATE TABLE repo_connections (
   user_id TEXT NOT NULL REFERENCES users(id),
   identity_id TEXT NOT NULL,
   connected_at INTEGER NOT NULL,
-  disconnected_at INTEGER,
+  generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+  removal_requested_at INTEGER,
+  disconnected_at INTEGER CHECK (
+    disconnected_at IS NULL OR removal_requested_at IS NULL
+  ),
   PRIMARY KEY (repo_id, user_id),
   FOREIGN KEY (identity_id, user_id) REFERENCES identities(id, user_id)
 );
@@ -148,7 +154,7 @@ The API validates the provider for each identity and execution path, checks live
 
 For launch and reconciliation:
 
-1. Reserve a factory task ID and its repo/work-item mapping before calling Copilot. Request an opaque session ID derived from the task ID where supported, and record the returned SDK ID regardless. Use documented repo association and integration attribution as context, not as per-task keys. If the pinned runtime supports discoverable per-session metadata, add a versioned opaque factory task reference; do not put issue text, credentials, or user identifiers in it. Verify create/list round-tripping on each runtime before relying on it.
+1. Reserve a factory task ID and its repo/work-item mapping before calling Copilot. Request an opaque session ID derived from the task ID where supported, and record the returned SDK ID regardless. Use documented repo association and integration attribution as context, not as per-task keys. If the pinned runtime supports discoverable per-session metadata, add a versioned opaque factory task reference; do not put issue text, credentials, or user identifiers in it. Verify create/list round-tripping on each runtime before relying on it. Give the agent the issue and any known PR URL as prompt context, but never read prompt text back as an authoritative mapping or authorization signal.
 2. Look up owned tasks by the exact returned SDK ID in the correct runtime namespace. Recover a missing ID only when the runtime confirms a pre-reserved ID in that namespace, or the backend can verify a factory-issued correlation reference against its existing task. A session title, prompt, timestamp, or repo match alone is not evidence. Leave unresolved sessions in **Unlinked**; do not silently import them as tasks.
 3. Retain the exact PR reference returned by publication and refresh its state from the provider. Use provider-confirmed issue/work-item links to show related PRs, but do not infer that a session authored a PR merely because both point to the same issue. If publication may have succeeded but the response was lost, reconcile the exact publication reference before trying again.
 
@@ -156,12 +162,21 @@ In the portal, show a skeleton only when there is no snapshot. Keep last-known r
 
 Sync can repair missing fields on existing mappings; it cannot promise reconstruction after losing SQLite, since session discovery and metadata round-tripping vary by runtime. SQLite backup and restore preserve the authoritative mapping.
 
+## Remove a repository tab
+
+**Remove repo** applies to the signed-in user's connection, not the upstream repository. If that connection has unfinished tasks or unpublished changes, show an explicit **Stop and remove** confirmation that says unpublished changes may be discarded. The confirmed action does not affect other users' connections or tasks.
+
+1. Persist the pending removal and advance `generation` before starting cleanup. Reject new task starts, Sync, and publication for the removing connection. Discard late Sync writes from the prior generation. Reconcile any launch or publication already in flight; do not claim that a draft PR already published was undone.
+2. Cancel queued tasks and request that active tasks stop. Confirm the hosted session or local process is no longer running before completing removal. If confirmation is unavailable, keep the operation pending and show the blocker; for GitHub, link to the session so the requester can stop it there. Do not archive or delete a hosted session as a side effect of removing its tab.
+3. For Azure DevOps, reclaim only the connection's stopped task worktrees, their private Git copies, and associated local resume files. Reclaim the backend-owned seed clone only when no other live connection or task uses it; coordinate the check with new workspace allocation. GitHub needs no local checkout cleanup. Cleanup must be safe to retry after a restart.
+4. Evict the connection's snapshots and set `disconnected_at` while clearing `removal_requested_at`. Hide the tab but retain stable task/session/issue/PR identifiers. Reconnecting starts a new generation and requires fresh authorization. The same provider identity can see its retained links again, but cannot restore deleted workspace files. Exclude previously tracked sessions from **Unlinked** while their tab is disconnected. Never delete upstream branches, PRs, issues, or repositories.
+
 ## Restart and removal behavior
 
 - **Start:** reserve the task and its request ID before calling the SDK. Repeating the same request returns the same task; a different request for an already active repo/item is rejected. Store the session ID when allocated and wait for the cloud session's readiness signal before sending the first prompt. Keep pending start inputs in protected application state until delivered; do not put transcripts, prompts, or tokens in the task index.
 - **Restart:** reconnect known GitHub sessions by ID; the hosted execution can outlive the container. Keep Azure DevOps worktrees on `/workspaces` and SDK resume metadata in private durable storage. Local processes do not survive container replacement. Attempt to resume only when the workspace and SDK state are consistent; otherwise show `needs_recovery`. If startup or publication failed after a provider may have accepted the request, reconcile before retrying; never create a duplicate session or draft PR blindly.
 - **Authorization failure:** keep the result and move to `needs_auth` if publication is blocked. Resume after the original requester reconnects; never switch to a bot or another user's credentials. Revalidate before publishing. Verify that native GitHub sessions expose a supported change handoff before enabling automatic requester-authored PRs on that path.
-- **Remove:** stop active work and confirm it has stopped before retiring the task or cleaning up its local worktree. Archive a GitHub cloud session only if the supported integration permits it; otherwise hide the task locally. Do not claim that a GitHub-hosted session was deleted. Retain the mapping so previously tracked sessions are not rediscovered as external. Never delete issues, remote branches, or PRs as a side effect.
+- **Remove a task:** stop active work and confirm it has stopped before retiring the task or cleaning up its local worktree. Archive a GitHub cloud session only if the supported integration permits it; otherwise hide the task locally. Do not claim that a GitHub-hosted session was deleted. Retain the mapping so previously tracked sessions are not rediscovered as external. Never delete issues, remote branches, or PRs as a side effect.
 
 ## What the build must prove
 
@@ -169,6 +184,7 @@ Sync can repair missing fields on existing mappings; it cannot promise reconstru
 2. Concurrent launches on the same repo/item create at most one active task. Retries do not duplicate a Copilot session or a draft PR. Switching repo tabs or accounts cannot expose another user's connections, tasks, or credentials.
 3. The Azure DevOps process can modify its own worktree but cannot access `/data`, `/run/secrets`, or a sibling worktree. Publication uses the requester's provider identity and leaves review and merge to the team.
 4. Sync is safe to repeat. A partial failure preserves only the affected source's prior snapshot, an authoritative empty result clears it, and revocation hides it. Missing or ambiguous Copilot discovery never creates a false task-to-issue or task-to-PR link.
+5. Stop and remove survives a restart, prevents stale Sync from restoring cached rows, and leaves another user's connection and in-use Azure DevOps clone intact. An uncertain stop stays pending rather than deleting a workspace still in use.
 
 The builder can choose the API framework, SQLite driver, image base, sandbox mechanism, and event transport. Do not scaffold or deploy anything from this design until it is approved.
 
