@@ -37,6 +37,8 @@ Each settings entry opens its own navigable view in the main area, not a side pa
 
 Clicking the header's **Active sessions** count opens a dedicated main-area view of active Copilot sessions started by Software Factory, across all authorized repository connections, regardless of the selected tab. Each row shows the linked task or issue, session status, and repository name and provider. Read the persisted factory task-to-session mappings and current session state; exclude unlinked sessions, terminal sessions, and queued tasks that do not have a session yet. The header count uses the same scope. Returning to the repository view preserves its selected pane.
 
+Each session row has **View issue**, **View task**, and **Archive task** buttons. View issue opens the linked provider issue or work item in a new tab. View task opens the same inline task accordion used in the repo's Active tasks pane, keyed to the row's task rather than the selected repo. Archive task asks for **Stop and archive** confirmation. Keep the row visible until the runtime confirms the stop and the factory archives the task. Then remove it from both active lists and refresh the header count. Archiving does not delete the upstream issue, PR, or GitHub-hosted session.
+
 ```text
 [ Signed in as Sam ]  [ owner/repo ] [ org/project/ado-repo ] [+ New connection]   [ Usage ]
 Repo settings       | Active tasks | Open issues | Active PRs | Closed PRs | Closed issues   [Sync]
