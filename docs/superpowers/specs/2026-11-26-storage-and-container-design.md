@@ -27,6 +27,8 @@ For removal, the selected approach is **explicit stop and remove**. Blocking rem
 
 The desktop shell follows the Paint sketch: identity pill at top left, connected repo tabs and **New connection** in the header, and active Copilot sessions and AI credits at top right. The left rail contains **Repo settings**, **Factory settings**, and **Copilot settings**, with the deployment's short commit SHA and build timestamp at the bottom. The main area owns the selected repository's work views and **Sync**. Repo settings follow the selected connection; factory settings do not. Copilot settings are distinct from the one-run overrides on an issue.
 
+Each settings entry opens its own navigable view in the main area, not a side pane. Keep the shell visible, indicate the current entry, and let browser Back return to the previous repo view. **Repo settings** are scoped to a connection (authorization, sync, removal). **Factory settings** are scoped to the installation. **Copilot settings** are scoped to the signed-in user's account and task defaults. The mockup fields illustrate those scopes; they do not establish a settings API or permissions model.
+
 ```text
 [ Signed in as Sam ]  [ owner/repo ] [ org/project/ado-repo ] [+ New connection]   [ Usage ]
 Repo settings       | Active tasks | Open issues | Active PRs | Closed PRs | Closed issues   [Sync]
