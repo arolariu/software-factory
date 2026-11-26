@@ -1,6 +1,6 @@
 # Software Factory
 
-A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) from one Linux container. Delegated identity is opt-in; repository content, Sync, and task execution are not enabled in this milestone.
+A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) from one Linux container. Repository reads and explicit Sync are available through the API once delegated identity is configured. The browser is not wired to these flows yet, and task execution remains disabled.
 
 ## Run locally
 
@@ -24,6 +24,12 @@ Leave `FACTORY_IDENTITY_CONFIG_FILE` unset for the sign-in-disabled foundation. 
 Stop the application before backing up `factory.sqlite` and `credentials.sqlite` as one consistent pair. Credential rotation crosses both databases, so two independent online snapshots can produce a grant that points to a missing vault entry. Restore both files from the same stopped backup before starting the application, and escrow the matching key separately.
 
 The configuration has `publicOrigin`, a `github` array, and an optional `azureDevOps` object. Each GitHub entry has `hostname` (`github.com` or one explicit `<tenant>.ghe.com`), `label`, and `registrations` (`portal` required, `repository` and `copilot` optional). Each registration has `id`, `clientId`, `secret`, and an optional `scope` for GitHub. Use distinct applications per purpose; the repository GitHub App must be installed with Issues and Pull requests read permissions. Azure DevOps takes a single-tenant Entra `tenantId` and a delegated `registration`. Register `<publicOrigin>/auth/github/callback` and, when enabled, `<publicOrigin>/auth/azure-devops/callback` as exact callbacks. Verify entitlement and provider/org consent in staging before enabling real accounts. The signed-out browser shell does not initiate sign-in yet.
+
+### Repository reads and Sync
+
+`POST /api/connections/{id}/sync` queues read-only work and returns a `Location` receipt. Sync publishes a snapshot only after its entire source succeeds; a partial fetch never replaces existing rows. Reads page indexed SQLite rows and do not contact providers. Each source needs its own successful Sync within the 15-minute access window; reading Git data does not extend cached Azure Boards access. Restart retries interrupted read-only work only while its connection generation still matches.
+
+Upstream scans are bounded to 20 pages per source. If a source exceeds the bound, it stays unavailable or retains its last complete authorized snapshot rather than publishing truncated data. Azure Boards work items are project scoped. GitHub CI uses the listed head revision; Azure DevOps CI and Copilot session discovery are reported as unavailable in this milestone. Provider behavior has been tested with offline fixtures, not a live tenant. Azure DevOps needs delegated Boards and Git read access.
 
 ## Test coverage
 

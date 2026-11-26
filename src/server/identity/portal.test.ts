@@ -10,7 +10,7 @@ import { openIdentityPortal } from './portal.js';
 
 const origin = 'https://factory.example';
 
-it('signs in through Fastify and connects the authorized repo, but cannot perform operations', async () => {
+it('signs in, connects and syncs read-only through the app, without enabling mutations', async () => {
   const root = mkdtempSync(join(tmpdir(), 'factory-live-composition-'));
   const data = openDatabase(join(root, 'factory.sqlite'));
   migrate(data);
@@ -73,11 +73,47 @@ it('signs in through Fastify and connects the authorized repo, but cannot perfor
     expect((await attempt('unknown')).json().code).toBe('NOT_FOUND');
     expect((await server.inject({ method: 'POST', url: '/api/tasks/unknown/archive', headers, payload: { confirmed: true } }))
       .json().code).toBe('NOT_FOUND');
-    expect((await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers })).statusCode).toBe(503);
+    const issues = await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers });
+    expect(issues.json().freshness).toBe('not_synced');
+    const accepted = await server.inject({ method: 'POST', url: `/api/connections/${repo.id}/sync`, headers });
+    expect(accepted.statusCode).toBe(202);
     expect(transport).toHaveBeenCalledTimes(7);
+    const receipt = accepted.headers.location;
+    if (typeof receipt !== 'string') throw new Error('Missing receipt');
+    transport.mockResolvedValueOnce(Response.json({ id: 91, name: 'repo', owner: { id: 13, login: 'org' } }))
+      .mockResolvedValueOnce(Response.json({ installations: [{
+        id: 21, account: { id: 13 }, permissions: { issues: 'read', pull_requests: 'read' },
+      }] }))
+      .mockResolvedValueOnce(Response.json({ repositories: [{ id: 91 }] }))
+      .mockResolvedValueOnce(Response.json([]))
+      .mockResolvedValueOnce(Response.json([]));
+    auth.start();
+    await vi.waitFor(async () => {
+      expect((await server.inject({ url: receipt, headers })).json().state).toBe('completed');
+    }, { timeout: 3000 });
+    const cached = await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers });
+    expect(cached.json()).toMatchObject({ freshness: 'current', items: [] });
+    expect(transport).toHaveBeenCalledTimes(12);
+
+    transport.mockResolvedValueOnce(new Response('', { status: 502 }));
+    const outage = await server.inject({ method: 'POST', url: `/api/connections/${repo.id}/sync`, headers });
+    const outageReceipt = outage.headers.location;
+    if (typeof outageReceipt !== 'string') throw new Error('Missing outage receipt');
+    await vi.waitFor(async () => {
+      expect((await server.inject({ url: outageReceipt, headers })).json()).toMatchObject({
+        state: 'failed', problemCode: 'PROVIDER_ERROR',
+      });
+    }, { timeout: 3000 });
+    expect((await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers })).statusCode).toBe(200);
+
+    transport.mockResolvedValueOnce(new Response('', { status: 404 }));
+    expect((await server.inject({ method: 'POST', url: `/api/connections/${repo.id}/sync`, headers })).statusCode).toBe(202);
+    await vi.waitFor(async () => {
+      expect((await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers })).json().code).toBe('ACCESS_DENIED');
+    }, { timeout: 3000 });
   } finally {
     await server.close();
-    auth.close();
+    await auth.close();
     data.close();
     rmSync(root, { recursive: true });
   }

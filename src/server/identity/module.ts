@@ -6,6 +6,7 @@ import type { AuthorizationProvider, PortalModules, Requester } from '../http/po
 import type { CredentialVault, Tokens } from './credentials.js';
 import type { Purpose, Registration, Registry, RepoTarget } from './github-hosts.js';
 import { authorizationUrl, RepositoryAuthorizationDenied, type createOAuthTransport, type VerifiedAuthorization, type VerifiedRepository } from './oauth.js';
+import type { RepositoryAccess } from '../repositories/provider.js';
 
 const fifteenMinutes = 900_000;
 const sessionAge = 28_800_000;
@@ -44,7 +45,7 @@ interface Intent {
   intent: AuthorizationIntent; target: RepoTarget | null; connection: { id: string; generation: number } | null;
 }
 interface Pending { host_id: string; registration_binding: string; intent_json: string; verifier: string }
-type Transport = ReturnType<typeof createOAuthTransport>;
+type Transport = Pick<ReturnType<typeof createOAuthTransport>, 'redeem' | 'refresh'>;
 interface Options extends Transport {
   db: SQLite.Database;
   vault: CredentialVault;
@@ -373,6 +374,24 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     ...identity,
     readGrant,
     readTokens,
+    repositoryContext(connectionId: string, requester: Requester): RepositoryAccess | undefined {
+      const row = getConnection(connectionId, requester.id);
+      if (!row?.grant_id) return undefined;
+      const grant = getGrant(row.grant_id, requester.id);
+      if (!grant || !bound(grant)) throw new ApiFailure('ACCESS_UNVERIFIED');
+      const providerName = row.provider === 'github' ? 'github' : 'azure-devops';
+      const { target } = registry.repository(row.canonical_url, providerName);
+      return {
+        id: row.id, repoId: row.repo_id, grantId: row.grant_id, generation: row.generation, provider: row.provider,
+        repositoryId: row.provider_repo_id, scope: row.provider_scope, target, subject: row.subject,
+      };
+    },
+    markConnectionVerified(connectionId: string, requester: Requester, generation: number): void {
+      db.prepare(`UPDATE connection_access SET access_verified_at=?
+        WHERE connection_id=? AND user_id=? AND generation=? AND denied_at IS NULL
+        AND EXISTS (SELECT 1 FROM repo_connections c WHERE c.id=connection_id AND c.retired_at IS NULL AND c.generation=?)`)
+        .run(now(), connectionId, requester.id, generation, generation);
+    },
     connections(requester: Requester): ApiDto<'connections'> {
       return {
         items: db.prepare<[string], Connection>(`${connectionQuery} ORDER BY r.name,c.id`).all(requester.id).map((row) => ({

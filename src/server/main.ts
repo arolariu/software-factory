@@ -50,19 +50,21 @@ export async function startServer(options: StartupOptions) {
       ...(auth && { portal: auth.portal }),
     });
     const address = await app.listen({ host: '0.0.0.0', port });
+    auth?.start();
     const close = async () => {
       if (draining) return;
       draining = true;
+      auth?.stop();
       try {
         await app.close();
       } finally {
-        auth?.close();
+        await auth?.close();
         db.close();
       }
     };
     return { address, close };
   } catch (error) {
-    auth?.close();
+    await auth?.close();
     db.close();
     throw error;
   }

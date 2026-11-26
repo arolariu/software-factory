@@ -170,6 +170,11 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
   }
 
   return {
+    verifyRepository(registration: Registration, target: RepoTarget, accessToken: string) {
+      return repository(registration, target, {
+        Accept: 'application/json', Authorization: `Bearer ${accessToken}`, 'User-Agent': 'software-factory',
+      });
+    },
     async redeem({ registration, callback, code, verifier, target }: Redemption): Promise<VerifiedAuthorization> {
       const tokens = await exchange(registration, {
         grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: callback,
