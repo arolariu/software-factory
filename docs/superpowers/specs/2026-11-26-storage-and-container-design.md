@@ -21,6 +21,25 @@ For repo data, the selected approach is **mappings plus last-known lists per con
 
 For removal, the selected approach is **explicit stop and remove**. Blocking removal until every task is handled separately protects unfinished work, but makes it harder to reclaim disk space. The confirmation makes that tradeoff visible without turning ordinary tab switching into a destructive action.
 
+## Repository portal
+
+**Connect repo** takes a GitHub or Azure DevOps repository URL and opens interactive sign-in with the matching provider. After the backend confirms repository access, add and select that repository's tab. A cancelled or failed sign-in does not add a tab. Within each repository, show **Open issues**, **Open PRs**, **Closed PRs**, and **Closed issues**. Open issues is the default when opening a repo; the other views load independently so a slow PR or CI fetch does not block issue triage. Azure DevOps labels issues as work items and makes their project scope clear.
+
+```text
+[ owner/repo ] [ org/project/ado-repo ] [+ Connect repo]
+Open issues | Open PRs | Closed PRs | Closed issues       [Sync]
+#42  Fix pagination on large imports                     [Settings] [Start task]
+#43  Retry stalled imports                                [View task]
+```
+
+Use compact rows rather than cards so the titles, statuses, and actions are easy to scan. On narrower screens, let secondary fields wrap under the title instead of hiding the primary action. Issue rows show the issue key, title, and a link to the provider. An eligible open issue shows the settings cog to the left of **Start task**. Start uses defaults; the cog opens the existing per-run settings. If a task is already active, show **View task**. If an issue has a linked PR, show that link instead of offering launch. Closed issues never offer launch. The backend rechecks eligibility rather than relying on the cached list.
+
+Open PR rows show the PR key and title, `source -> target` branch names, the CI count, and **Open PR**, which opens the provider URL in a new browser tab. Include draft PRs in Open PRs and label them **Draft**. Closed PR rows keep the same layout and distinguish **Merged** from **Closed without merge** (including abandoned Azure DevOps PRs). If check data is available for a closed PR, show it for the final observed revision; do not imply the checks have run again.
+
+**CI count** is passed checks out of all reported, applicable CI checks for the displayed PR revision, not just required checks. GitHub adapters read check runs and CI status contexts; Azure DevOps adapters read CI PR statuses and build validation results. Use the latest result per check for that revision, not prior commits or retry attempts. Do not count the same build twice if it is confirmed to appear in both Azure DevOps feeds. Exclude approvals and non-CI merge policies. For example, **1/3 passed** can mean one passed, one failed, and one pending; show the breakdown in text on demand. Skipped or neutral results are not passes. A successful lookup with zero reported checks displays **No checks**; missing or inaccessible data displays **Checks unavailable**. If a previously loaded count is shown during a refresh failure, label it stale, and never reuse a count from an earlier revision.
+
+The repository snapshot may include check totals, breakdown, PR revision, and freshness; load CI independently of PR rows. The same per-repo Sync behavior applies: keep known rows visible while refreshing, show a skeleton on first load only, and distinguish an empty list from a load error.
+
 ## Container layout
 
 ```text
@@ -185,7 +204,8 @@ Sync can repair missing fields on existing mappings; it cannot promise reconstru
 3. The Azure DevOps process can modify its own worktree but cannot access `/data`, `/run/secrets`, or a sibling worktree. Publication uses the requester's provider identity and leaves review and merge to the team.
 4. Sync is safe to repeat. A partial failure preserves only the affected source's prior snapshot, an authoritative empty result clears it, and revocation hides it. Missing or ambiguous Copilot discovery never creates a false task-to-issue or task-to-PR link.
 5. Stop and remove survives a restart, prevents stale Sync from restoring cached rows, and leaves another user's connection and in-use Azure DevOps clone intact. An uncertain stop stays pending rather than deleting a workspace still in use.
+6. Connecting a repository opens its issue list without waiting on CI. New PR revisions never inherit old check totals, and closed issues cannot start tasks.
 
 The builder can choose the API framework, SQLite driver, image base, sandbox mechanism, and event transport. Do not scaffold or deploy anything from this design until it is approved.
 
-References: [Azure Static Web Apps plans](https://learn.microsoft.com/en-us/azure/static-web-apps/plans), [SQLite WAL](https://sqlite.org/wal.html), [Copilot SDK cloud sessions](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/cloud-sessions), [Azure DevOps Copilot app support](https://docs.github.com/en/copilot/how-tos/github-copilot-app/manage-azure-devops-work), [Git worktrees](https://git-scm.com/docs/git-worktree).
+References: [Azure Static Web Apps plans](https://learn.microsoft.com/en-us/azure/static-web-apps/plans), [SQLite WAL](https://sqlite.org/wal.html), [Copilot SDK cloud sessions](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/cloud-sessions), [Azure DevOps Copilot app support](https://docs.github.com/en/copilot/how-tos/github-copilot-app/manage-azure-devops-work), [Git worktrees](https://git-scm.com/docs/git-worktree), [GitHub status checks](https://docs.github.com/en/pull-requests/reference/status-checks), [Azure DevOps PR statuses](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/list?view=azure-devops-rest-7.1), [Azure DevOps policy evaluations](https://learn.microsoft.com/en-us/rest/api/azure/devops/policy/evaluations/list?view=azure-devops-rest-7.1).
