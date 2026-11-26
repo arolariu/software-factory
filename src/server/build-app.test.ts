@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildApp } from '../../src/server/build-app.js';
-import { migrate } from '../../src/server/persistence/migrations.js';
-import { openDatabase } from '../../src/server/persistence/open.js';
+import { buildApp } from './build-app.js';
+import { migrate } from './persistence/migrations.js';
+import { openDatabase } from './persistence/open.js';
 
 let directory: string;
 let db: ReturnType<typeof openDatabase>;

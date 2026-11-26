@@ -9,6 +9,7 @@
 !src/
 !src/server/
 !src/server/build-app.ts
+!src/server/build-app.test.ts
 !src/server/main.ts
 !src/server/persistence/
 !src/server/persistence/001-foundation.sql
@@ -18,14 +19,10 @@
 !src/web/index.html
 !src/web/main.ts
 !src/web/AppShell.svelte
+!src/web/AppShell.e2e.test.ts
 !scripts/
-!scripts/build-artifacts.mjs
-!tests/
-!tests/backend/
-!tests/backend/build-artifacts.test.ts
-!tests/backend/foundation.test.ts
-!tests/browser/
-!tests/browser/shell.spec.ts
+!scripts/build-artifacts.sh
+!scripts/build-artifacts.test.ts
 **/.env*
 **/*.sqlite*
 **/.npmrc

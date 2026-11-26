@@ -9,7 +9,7 @@
   },
   "packageManager": "npm@12.2.3",
   "scripts": {
-    "build": "vite build && tsc -p tsconfig.build.json && node scripts/build-artifacts.mjs",
+    "build": "vite build && tsc -p tsconfig.build.json && bash scripts/build-artifacts.sh",
     "check": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.web.json",
     "test": "vitest run",
     "test:browser": "playwright test",

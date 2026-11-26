@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('serves a usable signed-out shell from a direct link without fixtures or horizontal overflow', async ({ page }) => {
+test('serves the signed-out shell at a direct link without fixtures or horizontal overflow', async ({ page }) => {
   const response = await page.goto('/connections/example/issues');
   expect(response?.status()).toBe(200);
   await expect(page.getByRole('heading', { name: 'Software Factory' })).toBeVisible();
