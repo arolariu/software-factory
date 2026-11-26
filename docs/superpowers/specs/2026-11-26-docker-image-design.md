@@ -1,6 +1,6 @@
 # Software Factory Docker image and deployment contract
 
-**Status:** Proposed packaging design. The Dockerfile below is a reference, not an executable file in the repository. The [backend implementation plan](../plans/2026-11-26-backend-system.md#task-1-create-the-runtime-and-persistence-foundation) owns the scaffold and image smoke tests.
+**Status:** Foundation packaging is implemented in the [root Dockerfile](../../../Dockerfile). Future provider and SDK capabilities remain gated. The [backend implementation plan](../plans/2026-11-26-backend-system.md#task-1-create-the-runtime-and-persistence-foundation) owns the image smoke tests.
 
 ## Decision
 
@@ -32,19 +32,16 @@ FROM npm-base AS build
 RUN --mount=type=secret,id=npm_config,required=true \
     NPM_CONFIG_USERCONFIG=/run/secrets/npm_config \
     npm ci --include=dev --ignore-scripts --no-audit --no-fund
-RUN --network=none npm rebuild --offline
 COPY . .
 ARG BUILD_REVISION
 ARG BUILD_TIMESTAMP
 ARG BUILD_RUN_URL
-RUN --network=none npm run build \
-    && node scripts/write-build-metadata.mjs
+RUN --network=none npm run check && npm test && npm run build
 
 FROM npm-base AS prod-deps
 RUN --mount=type=secret,id=npm_config,required=true \
     NPM_CONFIG_USERCONFIG=/run/secrets/npm_config \
     npm ci --omit=dev --include=optional --ignore-scripts --no-audit --no-fund
-RUN --network=none npm rebuild --offline
 
 FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
@@ -62,7 +59,7 @@ CMD ["node","dist/server/main.js"]
 ### Stage and artifact rules
 
 - **Build:** `npm run build` compiles `dist/web/index.html` and fingerprinted assets from Vite, plus `dist/server/main.js` and the migration files required by `openDatabase()` and `migrate()`. Keep migrations with the server output; do not require the source tree at runtime. Run type checks, unit tests, and browser fixture tests in CI, not in the final image. The metadata writer emits `dist/build.json` from the three public CI inputs. It validates the full commit SHA, UTC build time, and exact workflow run URL for `arolariu/software-factory`; invalid release inputs fail the build, while absent local inputs are `null`. `GET /api/build` serves this artifact, not container startup time. The UI links the revision to the GitHub commit and the timestamp to the producing run when present.
-- **Install:** supply the approved Microsoft registry via the BuildKit `npm_config` secret even when no credential is needed; a missing mount fails the build. CI validates the selected registry before building. The tracked `.npmrc` contains only `save-exact=true` and `omit-lockfile-registry-resolved=true`. Lock exact versions and integrity, reject registry `resolved` URLs and non-registry dependencies in the baseline, and do not fall back to another feed. Run install scripts only in the subsequent no-network rebuild, with the feed config unmounted; prove this succeeds for the locked graph and each target architecture. If a native dependency genuinely needs compilation, add the needed compiler and headers to the install stages only and prove the resulting addon loads on the slim runtime. Do not silently enable downloads from a second feed or disable native smoke tests.
+- **Install:** supply the approved Microsoft registry via the BuildKit `npm_config` secret even when no credential is needed; a missing mount fails the build. CI validates the selected registry before building. The tracked `.npmrc` contains only `save-exact=true` and `omit-lockfile-registry-resolved=true`. Lock exact versions and integrity, reject registry `resolved` URLs and non-registry dependencies in the baseline, and do not fall back to another feed. No install scripts are needed in the foundation: SQLite ships a bundled glibc addon. If a later dependency needs a lifecycle script, explicitly approve it and run it only in a no-network stage with the feed config unmounted. Keep any compiler and headers outside the runtime, and prove the addon loads on each target architecture.
 - **Runtime:** retain only the built assets, compiled server and migrations, metadata, package type metadata, and Linux production modules. No source tree, compiler, browser test binaries, npm cache/config, fixtures, or credentials are copied into the runtime. The base image may include npm; the app is started directly by Node, not by `npm start`. Use a `.dockerignore` allowlist for the tracked build inputs (including the portable `.npmrc`); exclude `.git`, host `node_modules`, existing output, design artifacts, `.env` files, local credential/config files, and tests not needed by the build. CI must verify image contents independently.
 - **Later capabilities:** add the pinned Copilot SDK and needed platform optional packages only after runtime proof; add Git to the runtime only when the approved Azure DevOps path needs it. Git is not required for provider browsing. Keep any SDK writable state out of `/app`; a future adapter must explicitly separate temporary state from durable resume metadata. A Git worktree or the container boundary alone is not a sandbox.
 

@@ -1,0 +1,10 @@
+/node_modules/
+/dist/
+/test-results/
+/playwright-report/
+/.worktrees/
+/data/
+/.env*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
