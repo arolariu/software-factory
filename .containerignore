@@ -32,6 +32,7 @@ src/server/persistence/**
 !src/server/persistence/001-foundation.sql
 !src/server/persistence/002-identity.sql
 !src/server/identity/
+src/server/identity/**
 !src/server/identity/credentials.ts
 !src/server/identity/credentials.test.ts
 !src/server/identity/github-hosts.ts

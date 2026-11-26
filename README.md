@@ -1,6 +1,6 @@
 # Software Factory
 
-A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and a Fastify API from one Linux container. The [internal API](docs/superpowers/specs/2026-11-26-internal-api-design.md) is tested with injected adapters only. The shipping app does not configure those adapters or enable live sign-in, repository browsing, or task execution.
+A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) from one Linux container. Delegated identity is opt-in; repository content, Sync, and task execution are not enabled in this milestone.
 
 ## Run locally
 
@@ -16,6 +16,12 @@ FACTORY_DATA_DIR="$PWD/data" npm start
 ```
 
 Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api/build` returns artifact metadata (null fields for an unstamped local build). Use a private, writable data directory; SQLite stores its WAL and SHM alongside the database.
+
+### Configure delegated identity
+
+Leave `FACTORY_IDENTITY_CONFIG_FILE` unset for the sign-in-disabled foundation. To enable the identity API, use a canonical HTTPS public origin and mount a private JSON configuration and a separate raw 32-byte encryption key. Set `FACTORY_IDENTITY_CONFIG_FILE` to the JSON file's mounted path and `FACTORY_CREDENTIAL_KEY_FILE` to the key path (defaults to `/run/secrets/identity-key`). Do not put either file in the build context or commit it. Protect and back up `credentials.sqlite` using the same access controls as `factory.sqlite`, and escrow its key separately.
+
+The configuration has `publicOrigin`, a `github` array, and an optional `azureDevOps` object. Each GitHub entry has `hostname` (`github.com` or one explicit `<tenant>.ghe.com`), `label`, and `registrations` (`portal` required, `repository` and `copilot` optional). Each registration has `id`, `clientId`, `secret`, and an optional `scope` for GitHub. Use distinct applications per purpose; the repository GitHub App must be installed with Issues and Pull requests read permissions. Azure DevOps takes a single-tenant Entra `tenantId` and a delegated `registration`. Register `<publicOrigin>/auth/github/callback` and, when enabled, `<publicOrigin>/auth/azure-devops/callback` as exact callbacks. Verify entitlement and provider/org consent in staging before enabling real accounts. The signed-out browser shell does not initiate sign-in yet.
 
 ## Test coverage
 

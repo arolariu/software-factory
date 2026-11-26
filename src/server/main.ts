@@ -2,6 +2,7 @@ import { accessSync, constants, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp, type BuildMetadata } from './build-app.js';
+import { openIdentityPortal, type IdentityFiles } from './identity/portal.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
 
@@ -11,6 +12,7 @@ interface StartupOptions {
   port: number;
   container?: boolean;
   logger?: boolean;
+  identity?: IdentityFiles;
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
@@ -36,12 +38,17 @@ export async function startServer(options: StartupOptions) {
 
   const build = JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
   const db = openDatabase(join(dataDir, 'factory.sqlite'));
+  let auth: ReturnType<typeof openIdentityPortal> | undefined;
   let draining = false;
 
   try {
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
-    const app = await buildApp({ db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger });
+    if (options.identity) auth = openIdentityPortal(db, dataDir, options.identity);
+    const app = await buildApp({
+      db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger,
+      ...(auth && { portal: auth.portal }),
+    });
     const address = await app.listen({ host: '0.0.0.0', port });
     const close = async () => {
       if (draining) return;
@@ -49,11 +56,13 @@ export async function startServer(options: StartupOptions) {
       try {
         await app.close();
       } finally {
+        auth?.close();
         db.close();
       }
     };
     return { address, close };
   } catch (error) {
+    auth?.close();
     db.close();
     throw error;
   }
@@ -64,12 +73,16 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
     const value = env['PORT'] ?? '3000';
     if (!/^[0-9]+$/.test(value) || Number(value) === 0) throw new Error('PORT must be a valid TCP port.');
     const port = Number(value);
+    const configFile = env['FACTORY_IDENTITY_CONFIG_FILE'];
     const server = await startServer({
       dataDir: env['FACTORY_DATA_DIR'] ?? '/data',
       port,
       artifactDir,
       container: args.includes('--container'),
       logger: true,
+      ...(configFile !== undefined && { identity: {
+        configFile, keyFile: env['FACTORY_CREDENTIAL_KEY_FILE'] ?? '/run/secrets/identity-key',
+      } }),
     });
     const stop = async () => {
       process.off('SIGTERM', stop).off('SIGINT', stop);

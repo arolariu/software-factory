@@ -125,3 +125,28 @@ it.each(['', ' ', '0', '3e3', '0xbb8', ' 3000 '])('rejects CLI PORT=%j rather th
     report.mockRestore();
   }
 });
+
+it('loads the mounted identity config at startup and publishes only configured host metadata', async () => {
+  const configFile = join(root, 'identity.json');
+  const keyFile = join(root, 'identity-key');
+  writeFileSync(configFile, JSON.stringify({
+    publicOrigin: 'https://factory.example',
+    github: [{
+      hostname: 'tenant.ghe.com', label: 'Tenant',
+      registrations: { portal: { id: 'portal', clientId: 'client', secret: 'fixture-secret' } },
+    }],
+  }));
+  const serverOptions = { dataDir, artifactDir, port: 0, identity: { configFile, keyFile } };
+  await expect(startServer(serverOptions)).rejects.toThrow('Credential encryption key is missing or unreadable.');
+  writeFileSync(keyFile, Buffer.alloc(32, 9));
+  const instance = await startServer(serverOptions);
+  try {
+    const response = await fetch(`${instance.address}/api/auth/github/hosts`);
+    expect(await response.json()).toEqual({ items: [{ id: 'tenant.ghe.com', label: 'Tenant', hostname: 'tenant.ghe.com' }] });
+    expect((await fetch(`${instance.address}/api/me`)).status).toBe(401);
+  } finally {
+    await instance.close();
+  }
+  writeFileSync(configFile, '{"secret":"not-to-log"');
+  await expect(startServer(serverOptions)).rejects.toThrow('Identity configuration is missing or invalid.');
+});
