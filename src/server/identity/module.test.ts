@@ -316,6 +316,12 @@ it('reauthorizes the same Copilot account under a new registration, preserving i
   expect(result.items[0]?.state).toBe('connected');
   expect(result.defaultAccountId).toBe(result.items[0]?.id);
   await expect(replacement.readTokens(old.id, signed.requester)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+  const active = result.items[0];
+  if (!active) throw new Error('Missing replacement account');
+  await start(identity, signed, { intent: 'reconnect_copilot', copilotAccountId: active.id })();
+  expect(identity.copilotAccounts(signed.requester)).toMatchObject({
+    items: [{ id: old.id, state: 'connected' }], defaultAccountId: old.id,
+  });
 });
 
 it('invalidates a reconnect denial only for the verified bound account and generation', async () => {

@@ -240,7 +240,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
         previousRef = old?.credential_ref;
         db.prepare(`INSERT INTO delegated_grants
           (id,user_id,identity_id,host_id,purpose,registration_binding,credential_ref,revoked_at) VALUES (?,?,?,?,?,?,?,NULL)
-          ON CONFLICT(id) DO UPDATE SET credential_ref=excluded.credential_ref,revoked_at=NULL`)
+          ON CONFLICT(id) DO UPDATE SET credential_ref=excluded.credential_ref,revoked_at=NULL,superseded_by=NULL`)
           .run(grant.id, grant.user_id, grant.identity_id, grant.host_id, grant.purpose, grant.registration_binding, newRef);
         if (purpose === 'repository' && proof.repo && !old) persistConnection(person, registration, intent, proof.repo, grant.id);
         if (previousAccount && previousAccount.id !== grant.id) {
