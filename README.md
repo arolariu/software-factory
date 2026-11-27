@@ -69,7 +69,9 @@ bash scripts/package-windows-sidecar.sh /path/to/node-v24.22.3-win-x64.zip /path
 
 The script checks the ZIP against the pinned SHA-256, builds committed `HEAD` with pinned npm, and stages only the executable, its license, compiled Factory files and production dependencies. It runs the packaged Node and SQLite against a fresh database before exposing the output. This is a staging directory, not an installer or a supervised desktop application.
 
-The native vault-key component can be tested on Windows with `cargo test --locked --manifest-path src-tauri/vault-key/Cargo.toml`. It uses Windows user-scope DPAPI and refuses to replace a missing or invalid key for an existing vault. The programmatic desktop server binds an ephemeral IPv4 loopback port and rejects requests without the native channel token, including ordinary browser navigation. Neither component is exposed by the hosted CLI or connected to a Tauri shell yet.
+The native vault-key component uses Windows user-scope DPAPI and refuses to replace a missing or invalid key for an existing vault. The native supervisor owns one child per data directory. It passes the key and per-launch channel token through anonymous pipes and stops the child when the supervisor exits. The child binds an ephemeral IPv4 loopback port and rejects direct browser requests. The Tauri window and its native proxy are not wired up yet.
+
+On Windows, run `cargo test --locked --manifest-path src-tauri/vault-key/Cargo.toml` to test key protection. Set `FACTORY_TEST_WINDOWS_STAGE` to the staging directory created above, then run `cargo test --locked --manifest-path src-tauri/supervisor/Cargo.toml -- --include-ignored` to test start, stop, restart, and supervisor crash with the packaged Node executable.
 
 ## Verify the Linux image
 
