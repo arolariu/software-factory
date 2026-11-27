@@ -20,8 +20,10 @@ const config = Type.Object({
   publicOrigin: nonempty, github: Type.Array(profile), azureDevOps: Type.Optional(entra),
 }, { additionalProperties: false });
 
-type App = Static<typeof app>;
-export type GitHubHostProfile = Static<typeof profile>;
+type App = Omit<Static<typeof app>, 'secret'> & { secret?: string; flow?: 'device' };
+export type GitHubHostProfile = Omit<Static<typeof profile>, 'registrations'> & {
+  registrations: { portal: App; repository?: App; copilot?: App };
+};
 export type Purpose = 'portal' | 'repository' | 'copilot';
 export type IdentityProvider = 'github' | 'azure_devops';
 export interface Registration extends App {
@@ -47,7 +49,7 @@ export function createRegistry(hosts: readonly GitHubHostProfile[], azureDevOps?
     const appKey = JSON.stringify([options.issuer, spec.clientId]);
     if (appIds.has(appKey)) throw new Error('Authorization purposes require distinct app registrations.');
     appIds.add(appKey);
-    const binding = createHash('sha256').update(JSON.stringify([options, spec.id, spec.clientId])).digest('hex');
+    const binding = createHash('sha256').update(JSON.stringify([options, spec.id, spec.clientId, ...(spec.flow ? [spec.flow] : [])])).digest('hex');
     entries.set(`${options.hostId}:${options.purpose}`, { ...spec, ...options, binding });
   }
   for (const host of hosts) {

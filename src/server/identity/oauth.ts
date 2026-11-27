@@ -89,7 +89,8 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id: registration.clientId, client_secret: registration.secret,
+        client_id: registration.clientId,
+        ...(registration.secret !== undefined && { client_secret: registration.secret }),
         ...(registration.provider === 'azure-devops' && { scope: registration.requestedScope }),
         ...parameters,
       }),
@@ -169,31 +170,33 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
     };
   }
 
+  async function verifyIdentity(registration: Registration, tokens: Tokens, target: RepoTarget | null): Promise<VerifiedAuthorization> {
+    const headers = { Accept: 'application/json', Authorization: `Bearer ${tokens.accessToken}`, 'User-Agent': 'software-factory' };
+    const person = await request(registration.profileUrl, { headers });
+    const label = registration.provider === 'github' ? person['name'] || person['login'] : person['displayName'];
+    const account = subject(person['id']);
+    const repo = target && await repository(registration, target, headers).catch((error: unknown) => {
+      if (error instanceof ApiFailure && (error.code === 'ACCESS_DENIED' || error.code === 'NOT_FOUND')) {
+        throw new RepositoryAuthorizationDenied(account);
+      }
+      throw error;
+    });
+    return { subject: account, label: string(label), avatarUrl: avatar(person['avatar_url']), tokens, ...(repo && { repo }) };
+  }
+
   return {
+    verifyIdentity,
     verifyRepository(registration: Registration, target: RepoTarget, accessToken: string) {
       return repository(registration, target, {
         Accept: 'application/json', Authorization: `Bearer ${accessToken}`, 'User-Agent': 'software-factory',
       });
     },
     async redeem({ registration, callback, code, verifier, target }: Redemption): Promise<VerifiedAuthorization> {
+      if (!registration.secret) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
       const tokens = await exchange(registration, {
         grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: callback,
       });
-      const headers = { Accept: 'application/json', Authorization: `Bearer ${tokens.accessToken}`, 'User-Agent': 'software-factory' };
-      const person = await request(registration.profileUrl, { headers });
-      const label = registration.provider === 'github'
-        ? person['name'] || person['login'] : person['displayName'];
-      const account = subject(person['id']);
-      const repo = target && await repository(registration, target, headers).catch((error: unknown) => {
-        if (error instanceof ApiFailure && (error.code === 'ACCESS_DENIED' || error.code === 'NOT_FOUND')) {
-          throw new RepositoryAuthorizationDenied(account);
-        }
-        throw error;
-      });
-      return {
-        subject: account, label: string(label), avatarUrl: avatar(person['avatar_url']), tokens,
-        ...(repo && { repo }),
-      };
+      return verifyIdentity(registration, tokens, target);
     },
     refresh(registration: Registration, previous: Tokens): Promise<Tokens> {
       if (!previous.refreshToken) throw new ApiFailure('ACCESS_DENIED');

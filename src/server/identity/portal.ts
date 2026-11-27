@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type SQLite from 'better-sqlite3';
 import type { PortalOptions } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
-import { openCredentialVault } from './credentials.js';
+import { openCredentialVault, type CredentialVault } from './credentials.js';
 import { parseIdentityConfig } from './github-hosts.js';
 import { createIdentity } from './module.js';
 import { createOAuthTransport } from './oauth.js';
@@ -29,6 +29,11 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
     try { return openCredentialVault(join(dataDir, 'credentials.sqlite'), key); }
     finally { key.fill(0); }
   })();
+  return createConfiguredPortal(db, setup, vault, cursorKey, fetcher);
+}
+
+export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<typeof parseIdentityConfig>,
+  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch) {
   const workerSignal = new AsyncLocalStorage<AbortSignal>();
   const request: typeof fetch = (input, options) => {
     const worker = workerSignal.getStore();
@@ -90,7 +95,7 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
     },
   } satisfies PortalOptions;
   return {
-    portal,
+    portal, identity, transport,
     start() {
       repositories.recoverInterrupted();
       timer = setInterval(() => {

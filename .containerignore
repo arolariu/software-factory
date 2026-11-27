@@ -36,12 +36,14 @@ src/server/persistence/**
 !src/server/persistence/002-identity.sql
 !src/server/persistence/003-repository-sync.sql
 !src/server/persistence/004-management.sql
+!src/server/persistence/005-management-authorization.sql
 !src/server/management/
 src/server/management/**
 !src/server/management/setup.ts
 !src/server/management/setup.test.ts
 !src/server/management/vault-key.ts
 !src/server/management/runtime.ts
+!src/server/management/authorization.ts
 !src/server/management/operator.ts
 !src/server/repositories/
 src/server/repositories/**
@@ -53,6 +55,8 @@ src/server/repositories/**
 !src/server/identity/
 src/server/identity/**
 !src/server/identity/credentials.ts
+!src/server/identity/device-flow.ts
+!src/server/identity/device-flow.test.ts
 !src/server/identity/credentials.test.ts
 !src/server/identity/github-hosts.ts
 !src/server/identity/github-hosts.test.ts

@@ -5,7 +5,7 @@ import { buildApp, type BuildMetadata } from './build-app.js';
 import { openIdentityPortal, type IdentityFiles } from './identity/portal.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
-import { openManagementRuntime } from './management/runtime.js';
+import { openManagementRuntime, type ManagementOptions } from './management/runtime.js';
 import { issueOperatorCode } from './management/operator.js';
 
 interface StartupOptions {
@@ -15,7 +15,7 @@ interface StartupOptions {
   container?: boolean;
   logger?: boolean;
   identity?: IdentityFiles;
-  management?: { publicOrigin: string };
+  management?: ManagementOptions;
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
@@ -49,31 +49,34 @@ export async function startServer(options: StartupOptions) {
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
     if (options.management && options.identity) throw new Error('Configure either management mode or legacy identity, not both.');
-    if (options.management) management = openManagementRuntime(db, dataDir, options.management.publicOrigin);
+    if (options.management) management = openManagementRuntime(db, dataDir, options.management);
     if (options.identity) auth = openIdentityPortal(db, dataDir, options.identity);
+    const portal = auth?.portal ?? management?.portal;
     const app = await buildApp({
       db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger,
-      ...(auth && { portal: auth.portal }),
+      ...(portal && { portal }),
       ...(management && { management }),
     });
     const address = await app.listen({ host: '0.0.0.0', port });
     auth?.start();
+    management?.start();
     const close = async () => {
       if (draining) return;
       draining = true;
       auth?.stop();
+      management?.stop();
       try {
         await app.close();
       } finally {
         await auth?.close();
-        management?.close();
+        await management?.close();
         db.close();
       }
     };
     return { address, close };
   } catch (error) {
     await auth?.close();
-    management?.close();
+    await management?.close();
     db.close();
     throw error;
   }
@@ -85,6 +88,8 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
     const configFile = env['FACTORY_IDENTITY_CONFIG_FILE'];
     const managed = env['FACTORY_MANAGEMENT_MODE'] === '1';
     const publicOrigin = env['FACTORY_PUBLIC_ORIGIN'] ?? '';
+    const githubPortalClientId = env['FACTORY_GITHUB_PORTAL_CLIENT_ID'];
+    const githubRepositoryClientId = env['FACTORY_GITHUB_REPOSITORY_CLIENT_ID'];
     if (args[2] === 'setup-code') {
       if (!managed || configFile !== undefined) throw new Error('Setup code issuance requires management mode.');
       const code = issueOperatorCode(dataDir, publicOrigin, process.stdout.isTTY === true);
@@ -100,7 +105,11 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       artifactDir,
       container: args.includes('--container'),
       logger: true,
-      ...(managed && { management: { publicOrigin } }),
+      ...(managed && { management: {
+        publicOrigin,
+        ...(githubPortalClientId && { githubPortalClientId }),
+        ...(githubRepositoryClientId && { githubRepositoryClientId }),
+      } }),
       ...(configFile !== undefined && { identity: {
         configFile, keyFile: env['FACTORY_CREDENTIAL_KEY_FILE'] ?? '/run/secrets/identity-key',
       } }),

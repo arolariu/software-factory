@@ -92,8 +92,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     reply.header('Cache-Control', 'no-store');
     return options.build;
   });
-  registerPortalRoutes(app, options.portal, options.management?.setup.preSession);
-  if (options.management) registerManagementRoutes(app, options.management);
+  registerPortalRoutes(app, options.portal, options.portal ? undefined : options.management?.setup.preSession);
+  if (options.management) registerManagementRoutes(app, options.management, options.portal?.modules.identity);
   app.setNotFoundHandler((request, reply) => {
     if (isPageNavigation(request)) {
       return reply.header('Cache-Control', 'no-cache').sendFile('index.html', staticRoot, { cacheControl: false });

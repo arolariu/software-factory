@@ -41,7 +41,7 @@ interface Grant {
   id: string; host_id: string; purpose: Purpose; identity_id: string; user_id: string;
   registration_binding: string; credential_ref: string; revoked_at: number | null; superseded_by: string | null;
 }
-interface Intent {
+export interface Intent {
   intent: AuthorizationIntent; target: RepoTarget | null; connection: { id: string; generation: number } | null;
 }
 interface Pending { host_id: string; registration_binding: string; intent_json: string; verifier: string }
@@ -97,7 +97,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     return at - connection.access_verified_at < fifteenMinutes ? 'valid' : 'unverified';
   }
 
-  function beginAuthorization(
+  function selectAuthorization(
     provider: AuthorizationProvider, intent: AuthorizationIntent, sessionId: string, requester: Requester | null,
   ) {
     const session = getSession(sessionId);
@@ -127,12 +127,20 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     }
     const registration = registry.registration(hostId, purpose);
     if (registration.provider !== provider) throw new ApiFailure('INVALID_REQUEST');
+    return { registration, pending: { intent, target, connection } satisfies Intent };
+  }
+
+  function beginAuthorization(
+    provider: AuthorizationProvider, intent: AuthorizationIntent, sessionId: string, requester: Requester | null,
+  ) {
+    const { registration, pending } = selectAuthorization(provider, intent, sessionId, requester);
+    if (registration.flow === 'device') throw new ApiFailure('CAPABILITY_UNAVAILABLE');
     const state = token();
     const verifier = token();
     db.prepare('DELETE FROM oauth_intents WHERE expires_at <= ?').run(now());
     db.prepare('INSERT INTO oauth_intents VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(hash(state), hash(sessionId), provider, hostId, registration.binding,
-        JSON.stringify({ intent, target, connection } satisfies Intent), verifier, now() + fifteenMinutes);
+      .run(hash(state), hash(sessionId), provider, registration.hostId, registration.binding,
+        JSON.stringify(pending), verifier, now() + fifteenMinutes);
     return { authorizationUrl: authorizationUrl(registration, callbackUrl(provider), state, verifier) };
   }
 
@@ -212,7 +220,15 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       }
       throw error;
     });
-    if (!getSession(sessionId)) throw new ApiFailure('AUTH_REQUIRED');
+    return persistAuthorization(sessionId, intent, registration, proof);
+  }
+
+  function persistAuthorization(sessionId: string, intent: Intent, registration: Registration,
+    proof: VerifiedAuthorization, authorize?: () => void) {
+    const session = getSession(sessionId);
+    if (!session) throw new ApiFailure('AUTH_REQUIRED');
+    const purpose = purposeOf(intent.intent);
+    if (!registry.bound(registration.hostId, purpose, registration.binding)) throw new ApiFailure('ACCESS_DENIED');
     const reconnectCopilot = intent.intent.intent === 'reconnect_copilot' ? intent.intent.copilotAccountId : null;
     let newRef: string | undefined;
     let previousRef: string | undefined;
@@ -220,6 +236,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     let result: { redirectTo: string; sessionId?: string };
     try {
       result = db.transaction(() => {
+        authorize?.();
         const person = persistPerson(purpose === 'portal' ? null : session.user_id, registration, proof);
         const old = db.prepare<[string, string, string, string], Grant>(
           'SELECT * FROM delegated_grants WHERE user_id=? AND identity_id=? AND purpose=? AND registration_binding=?',
@@ -374,6 +391,8 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     ...identity,
     readGrant,
     readTokens,
+    selectAuthorization,
+    persistAuthorization,
     repositoryContext(connectionId: string, requester: Requester): RepositoryAccess | undefined {
       const row = getConnection(connectionId, requester.id);
       if (!row?.grant_id) return undefined;

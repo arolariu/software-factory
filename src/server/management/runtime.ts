@@ -1,7 +1,12 @@
 import { existsSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import { join } from 'node:path';
 import type SQLite from 'better-sqlite3';
 import { openCredentialVault } from '../identity/credentials.js';
+import { createRegistry } from '../identity/github-hosts.js';
+import { createConfiguredPortal } from '../identity/portal.js';
+import { createGitHubDeviceFlow } from '../identity/device-flow.js';
+import { createAuthorizationService } from './authorization.js';
 import { createSetupStore } from './setup.js';
 import { loadOrInitializeVaultKey } from './vault-key.js';
 
@@ -21,15 +26,52 @@ export function assertManagementData(db: SQLite.Database) {
   return setup;
 }
 
-export function openManagementRuntime(db: SQLite.Database, dataDir: string, publicOrigin: string) {
-  const origin = managementOrigin(publicOrigin);
+export interface ManagementOptions {
+  publicOrigin: string;
+  githubPortalClientId?: string;
+  githubRepositoryClientId?: string;
+}
+
+export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch) {
+  const origin = managementOrigin(options.publicOrigin);
   const setup = assertManagementData(db);
   const vaultPath = join(dataDir, 'credentials.sqlite');
   const key = loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), existsSync(vaultPath));
+  const registration = (clientId: string) => ({ id: clientId, clientId, flow: 'device' as const });
   try {
+    const registry = createRegistry(options.githubPortalClientId ? [{
+      hostname: 'github.com', label: 'GitHub',
+      registrations: {
+        portal: registration(options.githubPortalClientId),
+        ...(options.githubRepositoryClientId && { repository: registration(options.githubRepositoryClientId) }),
+      },
+    }] : []);
+    const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const vault = openCredentialVault(vaultPath, key);
-    return { origin, setup, close: vault.close };
-  } finally {
-    key.fill(0);
-  }
+    const configured = options.githubPortalClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetcher) : undefined;
+    const authorization = configured && createAuthorizationService({
+      db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetcher),
+    });
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let pending: Promise<void> | undefined;
+    const stop = () => { clearInterval(timer); configured?.stop(); };
+    return {
+      origin, setup, authorization, portal: configured?.portal,
+      start() {
+        configured?.start();
+        if (authorization) timer = setInterval(() => {
+          if (pending) return;
+          pending = authorization.pollNext().catch(() => console.error('Authorization worker failed.'))
+            .finally(() => { pending = undefined; });
+        }, 1_000).unref();
+      },
+      stop,
+      async close() {
+        stop();
+        await pending;
+        if (configured) await configured.close();
+        else { cursorKey.fill(0); vault.close(); }
+      },
+    };
+  } finally { key.fill(0); }
 }
