@@ -149,7 +149,10 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
       return live(requester, id, async (client, found) => {
         const result = await client.checks(key, query.headRevision);
         if (result.headRevision !== query.headRevision) throw new ApiFailure('PR_REVISION_CHANGED');
-        if (!result.items) return result;
+        if (!result.items) {
+          if (query.cursor !== undefined) throw new ApiFailure('SNAPSHOT_CHANGED');
+          return result;
+        }
         const scope = JSON.stringify([requester.id, id, found.generation, key, 'checks']);
         const revision = createHash('sha256').update(JSON.stringify(result)).digest('hex');
         const from = position<number>(query.cursor, scope, revision, 0);

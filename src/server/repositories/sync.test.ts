@@ -234,6 +234,11 @@ it('does not publish delayed pages or renew verification after the connection ge
       headRevision: 'head', availability: { available: false, reasonCode: 'CAPABILITY_UNAVAILABLE' }, passed: null, total: null, items: null,
     });
 
+    await expect(api.checks(requester, 'conn', '1', { headRevision: 'head', cursor: first.items?.nextCursor ?? '' }))
+      .rejects.toThrow('SNAPSHOT_CHANGED');
+    checks.mockResolvedValueOnce({
+      headRevision: 'head', availability: { available: false, reasonCode: 'CAPABILITY_UNAVAILABLE' }, passed: null, total: null, items: null,
+    });
     expect((await api.checks(requester, 'conn', '1', { headRevision: 'head' })).total).toBeNull();
   });
 
