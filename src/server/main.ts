@@ -13,11 +13,13 @@ interface StartupOptions {
   logger?: boolean;
 }
 
+const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
+
 export function verifyContainerData(dataDir: string, mode: number, mountInfo: string): void {
   const filesystem = mountInfo.split('\n')
     .findLast((line) => line.split(' ')[4] === '/data')?.split(' - ')[1]?.split(' ')[0];
-  if (dataDir !== '/data' || !filesystem || ['tmpfs', 'ramfs', 'devtmpfs'].includes(filesystem) || (mode & 0o077) !== 0) {
-    throw new Error('The container requires a private, writable mount at /data.');
+  if (dataDir !== '/data' || !filesystem || !supportedDataFilesystems.has(filesystem) || (mode & 0o077) !== 0) {
+    throw new Error('The container requires a private, writable mount at /data on ext4, XFS, Btrfs, or ZFS.');
   }
 }
 

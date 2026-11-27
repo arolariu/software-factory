@@ -77,6 +77,11 @@ it('requires an exact /data mount and private permissions for container storage'
   }
 });
 
+it.each(['nfs', 'nfs4', 'cifs', 'fuse.sshfs'])('rejects container storage on %s before opening SQLite', (filesystem) => {
+  const mount = `67 12 0:51 /factory /data rw - ${filesystem} storage.example:/factory rw`;
+  expect(() => verifyContainerData('/data', 0o700, mount)).toThrow();
+});
+
 it('registers and removes process shutdown handlers for the CLI server', async () => {
   const socket = createServer();
   await new Promise<void>((resolve) => socket.listen(0, '127.0.0.1', resolve));

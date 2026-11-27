@@ -32,4 +32,4 @@ bash scripts/container-smoke.sh podman "$npm_config_path"
 bash scripts/container-smoke.sh both "$npm_config_path" --browser
 ```
 
-`--browser` uses the pinned Chromium to check the Podman-hosted app at 1080 × 720. For deployment, provision host-local `/data` owned by UID/GID `1000:1000` with mode `0700`. Update `.containerignore` when adding build inputs. See the [container specification](docs/superpowers/specs/2026-11-26-docker-image-design.md) for ingress and recovery requirements.
+`--browser` uses the pinned Chromium to check the Podman-hosted app at 1080 × 720. For deployment, provision host-local `/data` owned by UID/GID `1000:1000` with mode `0700`. The container accepts ext4, XFS, Btrfs, and ZFS mounts; network shares, memory-backed mounts, and unrecognized filesystems are rejected before SQLite opens. Update `.containerignore` when adding build inputs. See the [container specification](docs/superpowers/specs/2026-11-26-docker-image-design.md) for ingress and recovery requirements.
