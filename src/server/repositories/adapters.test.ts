@@ -180,7 +180,9 @@ it('reports unsupported or unauthorized CI sources as unavailable, never as zero
   const missing = adapter([
     Response.json({ head: { sha: 'h' } }), new Response('', { status: 403 }), Response.json([]),
   ]);
-  expect(await missing.client.checks('12', 'h')).toMatchObject({ total: null, items: null });
+  expect(await missing.client.checks('12', 'h')).toMatchObject({
+    availability: { available: false, reasonCode: 'CHECKS_NOT_PERMITTED' }, total: null, items: null,
+  });
   const denied = adapter([
     Response.json({ head: { sha: 'h' } }), new Response('', { status: 403 }), new Response('', { status: 401 }),
   ]);
@@ -195,6 +197,18 @@ it('reports unsupported or unauthorized CI sources as unavailable, never as zero
   await expect(adapter([
     Response.json({ head: { sha: 'h' } }), new Response('', { status: 500 }), Response.json([]),
   ]).client.checks('12', 'h')).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+});
+
+it('reports an incomplete CI scan separately from missing permissions', async () => {
+  const { client } = adapter([
+    Response.json({ head: { sha: 'h' } }),
+    Response.json({ check_runs: [] }, next),
+    Response.json([]),
+    ...Array.from({ length: 19 }, () => Response.json({ check_runs: [] }, next)),
+  ]);
+  expect(await client.checks('12', 'h')).toMatchObject({
+    availability: { available: false, reasonCode: 'CHECKS_INCOMPLETE' }, total: null, items: null,
+  });
 });
 
 it('propagates confirmed CI credential denial before the sibling scan finishes', async () => {

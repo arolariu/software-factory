@@ -249,7 +249,10 @@ export function createRepositoryProvider(connection: RepositoryAccess, token: st
         return { headRevision: head, availability: { available: true }, passed: details.filter((row) => row.state === 'passed').length,
           total: details.length, items: { items: details, nextCursor: null } };
       } catch (error) {
-        if (error instanceof ApiFailure && ['CAPABILITY_UNAVAILABLE', 'NOT_FOUND', 'ACCESS_UNVERIFIED'].includes(error.code)) {
+        if (error instanceof ApiFailure && error.code === 'ACCESS_UNVERIFIED') {
+          return { ...unavailable, availability: { available: false, reasonCode: 'CHECKS_INCOMPLETE' } };
+        }
+        if (error instanceof ApiFailure && ['CAPABILITY_UNAVAILABLE', 'NOT_FOUND'].includes(error.code)) {
           return { ...unavailable, availability: ciForbidden };
         }
         throw error;
