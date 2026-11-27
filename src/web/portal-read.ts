@@ -23,6 +23,7 @@ export function accessProblem(error: unknown) {
   if (!(error instanceof PortalReadError)) return;
   if (error.status === 401 || error.code === 'AUTH_REQUIRED') return 'AUTH_REQUIRED';
   if (error.code === 'ACCESS_UNVERIFIED') return 'ACCESS_UNVERIFIED';
+  if (error.code === 'CSRF_INVALID') return undefined;
   if (error.status === 403 || error.code === 'ACCESS_DENIED') return 'ACCESS_DENIED';
   return undefined;
 }

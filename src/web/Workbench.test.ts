@@ -119,6 +119,69 @@ it('keeps Sync tracking when switching repository panes with the keyboard', asyn
   expect(location.pathname).toBe('/connections/r.1/pull-requests');
 });
 
+it('keeps the selected repository visible when the initial repository read fails late', async () => {
+  const first = Promise.withResolvers<Response>();
+  const started = Promise.withResolvers<void>();
+  const other = { ...repo, id: 'r2', name: 'Other repo' };
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo, other] });
+    if (url === '/api/connections/r.1/issues?state=open') {
+      started.resolve();
+      return first.promise;
+    }
+    return Response.json(snapshot([{ ...issue, title: 'Other repo issue' }]));
+  });
+  await started.promise;
+  await page.getByRole('link', { name: other.name }).click();
+  await vi.waitFor(() => expect(target.textContent).toContain('Other repo issue'));
+  const response = Response.json({ code: 'ACCESS_DENIED' }, { status: 403 });
+  const bodyRead = Promise.withResolvers<void>();
+  const json = response.json.bind(response);
+  vi.spyOn(response, 'json').mockImplementation(async () => {
+    const body = await json();
+    bodyRead.resolve();
+    return body;
+  });
+  first.resolve(response);
+  await bodyRead.promise;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(target.textContent).toContain('Other repo issue');
+  expect(target.textContent).not.toContain('Repository access was denied');
+});
+
+it('only displays Sync progress and completion in the repository that owns the receipt', async () => {
+  const receipt = Promise.withResolvers<Response>();
+  const other = { ...repo, id: 'r2', name: 'Other repo' };
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo, other] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url === '/api/connections/r.1/sync') return Response.json({ operationId: 'running' }, { status: 202 });
+    return receipt.promise;
+  });
+  await press('Sync');
+  await page.getByRole('link', { name: other.name }).click();
+  expect(target.textContent).not.toContain('Sync requested');
+  receipt.resolve(Response.json({ state: 'completed' }));
+  await expect.element(page.getByRole('button', { name: 'Sync', exact: true })).toBeEnabled();
+  expect(target.textContent).not.toContain('Sync complete');
+  await page.getByRole('link', { name: repo.name, exact: true }).click();
+  await expect.element(page.getByText('Sync complete.', { exact: true })).toBeVisible();
+});
+
+it('keeps authorized rows when Sync is rejected for invalid CSRF', async () => {
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    return Response.json({ code: 'CSRF_INVALID' }, { status: 403 });
+  });
+  await press('Sync');
+  await vi.waitFor(() => expect(target.textContent).toContain('Sync could not be checked'));
+  expect(target.textContent).toContain(issue.title);
+  expect(target.textContent).not.toContain('Repository access was denied');
+});
+
 it('opens a PR deep link and refreshes the snapshot through an explicit Sync receipt', async () => {
   let synced = false;
   let checked = false;

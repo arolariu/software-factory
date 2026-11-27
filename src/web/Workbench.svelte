@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import DOMPurify from 'dompurify';
   import { marked } from 'marked';
   import type { ApiDto } from '../shared/api/schemas.js';
@@ -24,7 +25,7 @@
   let expanded = $state<string>();
   let alert = $state('');
   let detailAlert = $state('');
-  let syncNote = $state('');
+  const syncNotes = new SvelteMap<string, string>();
   let busy = $state(true);
   let commentBusy = $state(false);
   let syncing = $state(false);
@@ -128,8 +129,7 @@
   onMount(() => {
     void run(async () => {
       repos = (await read<ApiDto<'connections'>>('/api/connections')).items;
-      selected = view.id ? repos.find((repo) => encodeURIComponent(repo.id) === view.id) : repos[0];
-      if (selected?.state === 'connected') await list(selected);
+      selectView();
     });
     return () => lifetime.abort();
   });
@@ -172,7 +172,7 @@
   async function sync(repo: Connection) {
     closeDetail();
     syncing = true;
-    syncNote = 'Sync requested.';
+    syncNotes.set(repo.id, 'Sync requested.');
     try {
       const { csrfToken } = await read<ApiDto<'csrf'>>('/api/auth/csrf');
       const { operationId } = await read<ApiDto<'operationAccepted'>>(`/api${repoPath(repo.id)}/sync`, {
@@ -182,16 +182,17 @@
         const operation = await read<ApiDto<'operation'>>(`/api/operations/${encodeURIComponent(operationId)}`);
         const note = syncStates[operation.state];
         if (note) {
-          syncNote = note;
+          syncNotes.set(repo.id, note);
           if (selected?.id === repo.id) await run(() => list(repo), repo);
           return;
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 1000));
         lifetime.signal.throwIfAborted();
       }
-      syncNote = 'Sync is still running. Refresh the list to check for new records.';
+      syncNotes.set(repo.id, 'Sync is still running. Refresh the list to check for new records.');
     } catch (error) {
-      if (!clearAccess(error, repo)) syncNote = 'Sync could not be checked. Refresh the list or retry Sync.';
+      if (clearAccess(error, repo)) syncNotes.delete(repo.id);
+      else syncNotes.set(repo.id, 'Sync could not be checked. Refresh the list or retry Sync.');
     } finally { syncing = false; }
   }
 </script>
@@ -216,6 +217,7 @@
   {/if}
   {#if selected?.state === 'connected'}
     {@const repo = selected}
+    {@const syncNote = syncNotes.get(repo.id)}
     <div class="toolbar">
       <nav aria-label="Repository views">
         <a onclick={navigate} href={`${repoPath(repo.id)}/issues?state=open`} aria-current={filter === 'open' ? 'page' : undefined}>Open issues</a>
