@@ -29,6 +29,7 @@ src/server/http/**
 !src/server/http/routes.test.ts
 !src/server/main.ts
 !src/server/main.test.ts
+!src/server/provider-http.ts
 !src/server/persistence/
 src/server/persistence/**
 !src/server/persistence/001-foundation.sql
