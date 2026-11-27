@@ -42,6 +42,9 @@ src/server/persistence/**
 !src/server/persistence/004-management.sql
 !src/server/persistence/005-management-authorization.sql
 !src/server/persistence/006-task-observations.sql
+!src/server/persistence/007-supervised-starts.sql
+!src/server/persistence/task-start.ts
+!src/server/persistence/task-start.test.ts
 !src/server/persistence/task-reads.ts
 !src/server/persistence/task-reads.test.ts
 !src/server/management/
