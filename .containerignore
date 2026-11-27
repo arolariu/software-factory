@@ -40,6 +40,10 @@ src/server/repositories/**
 !src/server/repositories/provider.ts
 !src/server/repositories/adapters.ts
 !src/server/repositories/adapters.test.ts
+!src/server/repositories/azure-devops.ts
+!src/server/repositories/client.ts
+!src/server/repositories/cursors.ts
+!src/server/repositories/github.ts
 !src/server/repositories/sync.ts
 !src/server/repositories/sync.test.ts
 !src/server/identity/
