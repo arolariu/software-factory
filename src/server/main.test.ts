@@ -72,6 +72,9 @@ it('requires an exact /data mount and private permissions for container storage'
   expect(() => verifyContainerData('/data', 0o700, mount)).not.toThrow();
   expect(() => verifyContainerData('/data', 0o755, mount)).toThrow('private');
   expect(() => verifyContainerData('/data', 0o700, mount.replace(' /data ', ' /data-other '))).toThrow('private');
+  for (const filesystem of ['tmpfs', 'ramfs']) {
+    expect(() => verifyContainerData('/data', 0o700, mount.replace('ext4', filesystem))).toThrow('private');
+  }
 });
 
 it('registers and removes process shutdown handlers for the CLI server', async () => {
@@ -105,7 +108,7 @@ it('returns a nonzero CLI status for unusable configuration', async () => {
   }
 });
 
-it.each(['', ' ', '0'])('rejects CLI PORT=%j rather than using an unexpected ephemeral port', async (port) => {
+it.each(['', ' ', '0', '3e3', '0xbb8', ' 3000 '])('rejects CLI PORT=%j rather than accepting an unsupported value', async (port) => {
   const previous = process.exitCode;
   const report = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {

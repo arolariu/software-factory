@@ -14,8 +14,9 @@ interface StartupOptions {
 }
 
 export function verifyContainerData(dataDir: string, mode: number, mountInfo: string): void {
-  const mounted = mountInfo.split('\n').some((line) => line.split(' ')[4] === '/data');
-  if (dataDir !== '/data' || !mounted || (mode & 0o077) !== 0) {
+  const filesystem = mountInfo.split('\n')
+    .findLast((line) => line.split(' ')[4] === '/data')?.split(' - ')[1]?.split(' ')[0];
+  if (dataDir !== '/data' || !filesystem || ['tmpfs', 'ramfs', 'devtmpfs'].includes(filesystem) || (mode & 0o077) !== 0) {
     throw new Error('The container requires a private, writable mount at /data.');
   }
 }
@@ -58,8 +59,9 @@ export async function startServer(options: StartupOptions) {
 
 export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
   try {
-    const port = Number(env['PORT'] ?? '3000');
-    if (port === 0) throw new Error('PORT must be a valid TCP port.');
+    const value = env['PORT'] ?? '3000';
+    if (!/^[0-9]+$/.test(value) || Number(value) === 0) throw new Error('PORT must be a valid TCP port.');
+    const port = Number(value);
     const server = await startServer({
       dataDir: env['FACTORY_DATA_DIR'] ?? '/data',
       port,
