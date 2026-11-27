@@ -59,15 +59,16 @@ const vaultBinding = (grant: Omit<Grant, 'credential_ref' | 'revoked_at' | 'supe
 
 export function createIdentity({ db, vault, origin, registry, redeem, refresh, now = Date.now }: Options) {
   const inFlight = new Map<string, Promise<Tokens>>();
-  function getSession(id: string) {
+  function getSessionByHash(sessionHash: string) {
     const row = db.prepare<[string, number], Session>(`SELECT s.* FROM portal_sessions s
       WHERE session_hash=? AND expires_at>? AND (user_id IS NULL OR EXISTS (
         SELECT 1 FROM delegated_grants g WHERE g.user_id=s.user_id AND g.identity_id=s.identity_id
           AND g.purpose='portal' AND g.registration_binding=s.registration_binding AND g.revoked_at IS NULL
-      ))`).get(hash(id), now());
+      ))`).get(sessionHash, now());
     if (row?.host_id && !registry.bound(row.host_id, 'portal', row.registration_binding ?? '')) return undefined;
     return row;
   }
+  const getSession = (id: string) => getSessionByHash(hash(id));
   const getGrant = (id: string, owner: string) => db.prepare<[string, string], Grant>(
     'SELECT * FROM delegated_grants WHERE id = ? AND user_id = ?',
   ).get(id, owner);
@@ -393,6 +394,9 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     readTokens,
     selectAuthorization,
     persistAuthorization,
+    isRequesterSession(sessionHash: string, requester: Requester): boolean {
+      return getSessionByHash(sessionHash)?.user_id === requester.id;
+    },
     recordRepositoryDenial(requester: Requester, intent: Intent, subject: string): void {
       if (!intent.connection) return;
       const original = getConnection(intent.connection.id, requester.id);

@@ -174,6 +174,59 @@ it('claims only via the initiating browser and completes verified GitHub reposit
     const connection = (await app.inject({ url: '/api/connections', headers: signed })).json().items[0];
     expect(connection.repositoryUrl).toBe('https://github.com/org/repo');
     expect((await app.inject({ url: `/api/connections/${connection.id}/issues?state=open`, headers: signed })).statusCode).toBe(200);
+    wire.mockResolvedValueOnce(device()).mockResolvedValueOnce(token()).mockResolvedValueOnce(profile());
+    const secondPre = await init();
+    const second = await start(secondPre, signIn);
+    const secondId = second.json().flowId as string;
+    await due(secondId);
+    const secondLogin = await app.inject({ method: 'POST', url: `/api/authorization/flows/${secondId}/complete`, headers: secondPre });
+    expect(secondLogin.statusCode).toBe(204);
+    const secondCookie = String(secondLogin.headers['set-cookie']).split(';')[0] ?? '';
+    const secondCsrf = (await app.inject({ url: '/api/auth/csrf', headers: { cookie: secondCookie } })).json().csrfToken as string;
+    const secondSession = { cookie: secondCookie, origin, 'x-csrf-token': secondCsrf };
+    wire.mockResolvedValueOnce(device()).mockResolvedValueOnce(token()).mockResolvedValueOnce(profile())
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const unrelated = await start(signed, { intent: 'connect', repositoryUrl: 'https://github.com/org/other' });
+    const unrelatedId = unrelated.json().flowId as string;
+    await due(unrelatedId);
+    expect((await app.inject({ url: `/api/authorization/flows/${unrelatedId}`, headers: signed })).json().state).toBe('failed');
+    expect((await app.inject({ url: `/api/connections/${connection.id}/issues?state=open`, headers: signed })).statusCode).toBe(200);
+    for (const stop of ['cancel', 'expire', 'logout', 'cancel-success'] as const) {
+      const headers = stop === 'logout' ? secondSession : signed;
+      const started = Promise.withResolvers<void>();
+      const provider = Promise.withResolvers<Response>();
+      wire.mockResolvedValueOnce(device()).mockResolvedValueOnce(token()).mockResolvedValueOnce(profile())
+        .mockImplementationOnce(() => { started.resolve(); return provider.promise; });
+      const success = stop === 'cancel-success';
+      if (success) {
+        wire.mockResolvedValueOnce(Response.json({ installations: [{
+          id: 11, account: { id: 12 }, permissions: { issues: 'read', pull_requests: 'read' },
+        }] })).mockResolvedValueOnce(Response.json({ repositories: [{ id: 99 }] }));
+      }
+      const reconnect = await start(headers, { intent: 'reconnect', connectionId: connection.id });
+      expect(reconnect.statusCode).toBe(200);
+      const flowId = reconnect.json().flowId as string;
+      const flowPath = `/api/authorization/flows/${flowId}`;
+      const polling = due(flowId);
+      await started.promise;
+      try {
+        if (stop === 'cancel' || success) {
+          expect((await app.inject({ method: 'DELETE', url: flowPath, headers })).statusCode).toBe(204);
+        } else if (stop === 'expire') {
+          db.prepare('UPDATE management_flows SET expires_at=? WHERE id=?').run(Date.now() - 1, flowId);
+        } else {
+          expect((await app.inject({ method: 'POST', url: '/api/auth/logout', headers })).statusCode).toBe(204);
+        }
+      } finally {
+        provider.resolve(success ? Response.json({ id: 99, name: 'repo', owner: { id: 12, login: 'org' } })
+          : new Response(null, { status: 404 }));
+        await polling;
+      }
+      if (stop === 'cancel' || success) expect((await app.inject({ url: flowPath, headers })).json().state).toBe('cancelled');
+      expect((await app.inject({
+        url: `/api/connections/${connection.id}/issues?state=open`, headers: signed,
+      })).statusCode, stop).toBe(200);
+    }
     wire.mockResolvedValueOnce(device()).mockResolvedValueOnce(token()).mockResolvedValueOnce(profile())
       .mockResolvedValueOnce(new Response(null, { status: 404 }));
     const revoke = await start(signed, { intent: 'reconnect', connectionId: connection.id });

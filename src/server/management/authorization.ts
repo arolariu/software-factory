@@ -11,7 +11,7 @@ import { RepositoryAuthorizationDenied, type createOAuthTransport, type Verified
 import { sessionHash, type SetupStore, type VerifiedPortalAccount } from './setup.js';
 
 type Identity = Pick<ReturnType<typeof createIdentity>,
-  'resolveRequester' | 'selectAuthorization' | 'persistAuthorization' | 'recordRepositoryDenial'>;
+  'resolveRequester' | 'selectAuthorization' | 'persistAuthorization' | 'isRequesterSession' | 'recordRepositoryDenial'>;
 type Context = { host: string; binding: string; intent: Intent; purpose: 'portal' | 'repository'; requesterId: string | null };
 type PendingSecret = { userCode: string; deviceCode: string } | { userCode: string; tokens: Tokens };
 type ReadySecret = { userCode: string; proof: VerifiedAuthorization };
@@ -190,7 +190,15 @@ export function createAuthorizationService({ db, vault, setup, registry, identit
         vault.delete(changed.changes ? row.credential_ref : ref);
       } catch (error) {
         if (error instanceof RepositoryAuthorizationDenied && context.requesterId) {
-          identity.recordRepositoryDenial({ id: context.requesterId }, context.intent, error.subject);
+          const requester = { id: context.requesterId };
+          db.transaction(() => {
+            const pending = db.prepare(`SELECT 1 FROM management_flows
+              WHERE id=? AND session_hash=? AND state='pending' AND expires_at>? AND credential_ref=?`)
+              .get(row.id, row.session_hash, clock(), row.credential_ref);
+            if (pending && identity.isRequesterSession(row.session_hash, requester)) {
+              identity.recordRepositoryDenial(requester, context.intent, error.subject);
+            }
+          }).immediate();
         }
         if (error instanceof ApiFailure && error.code === 'RATE_LIMITED') retry(row.interval_ms + 5_000);
         else finish(row, 'failed');
