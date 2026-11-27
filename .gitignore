@@ -4,6 +4,7 @@
 /playwright-report/
 /coverage/
 /.smoke.*/
+/src/web/public/sf-smoke-*.txt
 /.vitest/
 /.worktrees/
 /data/
