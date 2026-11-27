@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { opaqueIdSegment } from '../shared/api/schemas.js';
+  import { opaqueIdSegment } from '../shared/api/opaque-id.js';
   import Management from './settings/Management.svelte';
   import Workbench from './Workbench.svelte';
   import ActiveSessions from './ActiveSessions.svelte';
