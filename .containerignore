@@ -59,6 +59,8 @@ src/server/management/**
 !src/server/management/authorization.ts
 !src/server/management/settings.ts
 !src/server/management/operator.ts
+!src/server/management/owner-rebind.ts
+!src/server/management/owner-rebind.test.ts
 !src/server/repositories/
 src/server/repositories/**
 !src/server/repositories/provider.ts

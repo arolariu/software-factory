@@ -41,3 +41,21 @@ it('upgrades a foundation database without losing existing connection IDs or row
     rmSync(directory, { recursive: true });
   }
 });
+
+it('upgrades the prior hosted schema without changing the owner or shared-app registration', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-hosted-upgrade-'));
+  const db = openDatabase(join(directory, 'data.sqlite'));
+  try {
+    const files = ['001-foundation', '002-identity', '003-repository-sync', '004-management', '005-management-authorization'];
+    migrate(db, files.map((name, index) => ({ version: index + 1, sql: readFileSync(new URL(`./${name}.sql`, import.meta.url), 'utf8') })));
+    db.exec(`INSERT INTO management_owner VALUES (1,'github','github.com','42','previous-shared-app');
+      INSERT INTO management_settings VALUES (1,9,0)`);
+    migrate(db);
+    expect(hasCurrentSchema(db)).toBe(true);
+    expect(db.prepare('SELECT subject,registration_id FROM management_owner').get()).toEqual({
+      subject: '42', registration_id: 'previous-shared-app',
+    });
+    expect(db.prepare('SELECT version,repository_enabled FROM management_settings').get()).toEqual({ version: 9, repository_enabled: 0 });
+    expect(db.prepare('SELECT count(*) AS n FROM task_starts').get()).toEqual({ n: 0 });
+  } finally { db.close(); rmSync(directory, { recursive: true }); }
+});

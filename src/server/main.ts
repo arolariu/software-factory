@@ -7,6 +7,7 @@ import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
 import { openManagementRuntime, type ManagementOptions } from './management/runtime.js';
 import { issueOperatorCode } from './management/operator.js';
+import { rebindManagedOwner } from './management/owner-rebind.js';
 import { createSetupStore } from './management/setup.js';
 
 interface StartupOptions {
@@ -103,6 +104,13 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       if (!managed || configFile !== undefined) throw new Error('Setup code issuance requires management mode.');
       const code = issueOperatorCode(dataDir, publicOrigin, process.stdout.isTTY === true);
       process.stdout.write(`${code.code}\n`);
+      return undefined;
+    }
+    if (args[2] === 'rebind-github-app') {
+      if (!managed || configFile !== undefined) throw new Error('Owner rebind requires management mode.');
+      await rebindManagedOwner(dataDir, publicOrigin, githubClientId, env['FACTORY_GITHUB_REBIND_CLIENT_ID'],
+        process.stdout.isTTY === true, console.log);
+      console.log('Owner verified. Start Factory with the replacement Client ID and sign in again.');
       return undefined;
     }
     const server = await startServer({

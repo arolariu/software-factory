@@ -27,6 +27,8 @@ Set `FACTORY_GITHUB_CLIENT_ID` to the public Client ID of one GitHub App with de
 
 Existing hosted previews can keep `FACTORY_GITHUB_PORTAL_CLIENT_ID` as a fallback. Keep the same sign-in Client ID to preserve the owner binding. `FACTORY_GITHUB_REPOSITORY_CLIENT_ID` is no longer used; reconnect repositories that were authorized with a different app.
 
+To replace a claimed instance's public GitHub App, stop Factory and take a consistent database backup first. From a trusted interactive terminal, use the same release and data directory with `FACTORY_MANAGEMENT_MODE=1`, the existing `FACTORY_PUBLIC_ORIGIN` and `FACTORY_GITHUB_CLIENT_ID`, and set `FACTORY_GITHUB_REBIND_CLIENT_ID` to the new public ID. Run `node dist/server/main.js rebind-github-app` and approve in GitHub as the existing owner. Only an exact GitHub account match can switch the binding. After success, restart with the new `FACTORY_GITHUB_CLIENT_ID`, remove `FACTORY_GITHUB_REBIND_CLIENT_ID`, sign in again, and reconnect repositories. This procedure does not transfer ownership or change either GitHub App's installation.
+
 Setup is owner-only. The preview UI can toggle new repository authorization and connect, reconnect, or disconnect a repository locally. Disconnect does not revoke upstream authorization. Custom app replacement, Windows/Tauri packaging and signing, and provider staging verification are not part of this preview. Legacy configured deployments use the mode below; populated legacy data cannot be claimed in preview mode.
 
 #### Legacy file-configured mode

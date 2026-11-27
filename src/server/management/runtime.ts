@@ -36,12 +36,16 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
   const origin = managementOrigin(options.publicOrigin);
   const setup = assertManagementData(db);
   const vaultPath = join(dataDir, 'credentials.sqlite');
-  const key = loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), existsSync(vaultPath));
   const { githubClientId } = options;
+  const registry = createRegistry(githubClientId ? [{
+    hostname: 'github.com', label: 'GitHub', deviceClientId: githubClientId,
+  }] : []);
+  const owner = setup.owner();
+  if (owner && !registry.bound(owner.host, 'portal', owner.registrationId)) {
+    throw new Error('Configured GitHub App does not match the Factory owner. Restore the current Client ID or rebind the owner.');
+  }
+  const key = loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), existsSync(vaultPath));
   try {
-    const registry = createRegistry(githubClientId ? [{
-      hostname: 'github.com', label: 'GitHub', deviceClientId: githubClientId,
-    }] : []);
     const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const vault = openCredentialVault(vaultPath, key);
     const lifecycle = new AbortController();
