@@ -41,6 +41,9 @@ src/server/persistence/**
 !src/server/persistence/003-repository-sync.sql
 !src/server/persistence/004-management.sql
 !src/server/persistence/005-management-authorization.sql
+!src/server/persistence/006-task-observations.sql
+!src/server/persistence/task-reads.ts
+!src/server/persistence/task-reads.test.ts
 !src/server/management/
 src/server/management/**
 !src/server/management/setup.ts

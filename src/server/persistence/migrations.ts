@@ -14,6 +14,7 @@ const migrations: readonly Migration[] = [
   { version: 3, sql: readMigration('./003-repository-sync.sql') },
   { version: 4, sql: readMigration('./004-management.sql') },
   { version: 5, sql: readMigration('./005-management-authorization.sql') },
+  { version: 6, sql: readMigration('./006-task-observations.sql') },
 ];
 
 const requiredTables = [
@@ -22,6 +23,7 @@ const requiredTables = [
   'repository_sources', 'repository_rows', 'repository_sync',
   'management_owner', 'management_pairing', 'management_claims', 'management_pair_attempts',
   'management_flows', 'management_flow_admission', 'management_settings', 'management_audit',
+  'task_observations',
 ];
 const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item', 'repository_sync_in_flight'];
 

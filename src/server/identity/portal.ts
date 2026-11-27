@@ -12,6 +12,7 @@ import { createOAuthTransport } from './oauth.js';
 import { createRepositoryProvider } from '../repositories/adapters.js';
 import type { RepositoryAccess } from '../repositories/provider.js';
 import { createRepositoryService } from '../repositories/sync.js';
+import { createTaskReads } from '../persistence/task-reads.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
 
@@ -71,6 +72,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
       return createRepositoryProvider(connection, tokens.accessToken, request);
     },
   });
+  const taskReads = createTaskReads(db, cursorKey, identity.readGrant);
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
   const worker = new AbortController();
@@ -89,8 +91,8 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
         pullRequests: repositories.pullRequests, checks: repositories.checks, closeIssue: disabled,
       },
       tasks: {
-        tasks: unavailable, activeSessions: unavailable, unlinkedSessions: unavailable, task: unavailable,
-        activity: unavailable, options: unavailable, statistics: unavailable, start: disabled,
+        ...taskReads, unlinkedSessions: unavailable,
+        activity: unavailable, options: unavailable, start: disabled,
       },
       operations: {
         read: repositories.read, sync: repositories.sync, input: disabled, archive: disabled, remove: disabled,

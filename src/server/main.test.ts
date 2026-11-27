@@ -35,7 +35,7 @@ it('migrates before listening and releases the database on shutdown', async () =
   await expect(fetch(`${server.address}/healthz`)).rejects.toThrow();
   const db = openDatabase(join(dataDir, 'factory.sqlite'));
   try {
-    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
   } finally {
     db.close();
   }
@@ -52,7 +52,7 @@ it('rejects an invalid port, a file data location, and an ephemeral container lo
 
 it('refuses a version marker with a missing schema before binding a port', async () => {
   const db = openDatabase(join(dataDir, 'factory.sqlite'));
-  db.pragma('user_version = 5');
+  db.pragma('user_version = 6');
   db.close();
   await expect(startServer({ dataDir, artifactDir, port: 0 })).rejects.toThrow('required schema objects');
 });

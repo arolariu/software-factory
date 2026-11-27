@@ -65,6 +65,27 @@ it('signs in, connects and syncs read-only through the app, without enabling mut
     const repo = (await server.inject({ url: '/api/connections', headers: { cookie } })).json().items[0];
     expect(repo.repositoryUrl).toBe('https://github.com/org/repo');
     const headers = { cookie, origin, 'x-csrf-token': signedCsrf };
+    const stored = data.prepare<[string], { id: string; repo_id: string; user_id: string; identity_id: string }>(
+      'SELECT id,repo_id,user_id,identity_id FROM repo_connections WHERE id=?',
+    ).get(repo.id);
+    if (!stored) throw new Error('Missing fixture connection');
+    data.prepare(`INSERT INTO tasks (id,connection_id,repo_id,requester_id,repo_identity_id,copilot_identity_id,work_item_key,
+      start_request_id,runtime_kind,runtime_scope,sdk_session_id,state,created_at,updated_at)
+      VALUES ('fixture-task',?,?,?,?,?,'11','fixture-request','github_cloud','fixture','fixture-session','waiting_input',0,1)`)
+      .run(stored.id, stored.repo_id, stored.user_id, stored.identity_id, stored.identity_id);
+    data.exec(`INSERT INTO task_observations (task_id,title,session_state,observed_at,question_id,question_text)
+      VALUES ('fixture-task','Review tests','waiting_input',1,'question-one','Which suite?')`);
+    expect((await server.inject({ url: '/api/active-sessions', headers })).json()).toMatchObject({
+      sessions: [{ taskId: 'fixture-task', title: 'Review tests', state: 'waiting_input' }],
+    });
+    expect((await server.inject({ url: '/api/tasks/fixture-task', headers })).json()).toMatchObject({
+      pendingQuestion: { id: 'question-one', text: 'Which suite?' },
+    });
+    expect((await server.inject({ url: '/api/statistics', headers })).json()).toMatchObject({
+      activeTasks: 1, credits: { measured: null, unmeasuredTasks: 1 },
+    });
+    expect((await server.inject('/api/tasks/fixture-task')).statusCode).toBe(401);
+    expect(transport).toHaveBeenCalledTimes(7);
     const attempt = (repoId: string) => server.inject({
       method: 'POST', url: `/api/connections/${repoId}/tasks`, headers,
       payload: { workItemKey: '1', copilotAccountId: 'not-configured', startRequestId: 'request-one' },
