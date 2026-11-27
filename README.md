@@ -43,6 +43,12 @@ The configuration has `publicOrigin`, a `github` array, and an optional `azureDe
 
 Upstream scans are bounded to 20 pages per source. If a source exceeds the bound, it stays unavailable or retains its last complete authorized snapshot rather than publishing truncated data. Azure Boards work items are project scoped. GitHub CI uses the listed head revision; Azure DevOps CI and Copilot session discovery are reported as unavailable in this milestone. Provider behavior has been tested with offline fixtures, not a live tenant. Azure DevOps needs delegated Boards and Git read access.
 
+## Check Copilot access
+
+On a development host with dev dependencies installed, run `npm run build`, then run `bash scripts/check-copilot-access.sh` in an interactive terminal with `FACTORY_GITHUB_CLIENT_ID` set to the public Client ID of your device-flow-enabled GitHub App. Approve the new device code with the account you want to verify. The check uses only that freshly authorized token and calls the SDK's authentication and model discovery methods in a temporary runtime directory. It does not use existing CLI credentials, store the token, start a task, or send a prompt.
+
+The result reports SDK authentication, model count, and models disabled by policy, not a personal plan name. A failed check or an empty model list does not prove an account has no Copilot subscription. [Organization seat details](https://docs.github.com/en/rest/copilot/copilot-user-management) are admin-only and not queried by Factory. The diagnostic is not available in the production image.
+
 ## Test coverage
 
 Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. The container smoke checks the built application, not the Bash helpers themselves.
