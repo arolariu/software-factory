@@ -29,7 +29,7 @@ Existing hosted previews can keep `FACTORY_GITHUB_PORTAL_CLIENT_ID` as a fallbac
 
 To replace a claimed instance's public GitHub App, stop Factory and take a consistent database backup first. From a trusted interactive terminal, use the same release and data directory with `FACTORY_MANAGEMENT_MODE=1`, the existing `FACTORY_PUBLIC_ORIGIN` and `FACTORY_GITHUB_CLIENT_ID`, and set `FACTORY_GITHUB_REBIND_CLIENT_ID` to the new public ID. Run `node dist/server/main.js rebind-github-app` and approve in GitHub as the existing owner. Only an exact GitHub account match can switch the binding. After success, restart with the new `FACTORY_GITHUB_CLIENT_ID`, remove `FACTORY_GITHUB_REBIND_CLIENT_ID`, sign in again, and reconnect repositories. This procedure does not transfer ownership or change either GitHub App's installation.
 
-Setup is owner-only. The preview UI can toggle new repository authorization and connect, reconnect, or disconnect a repository locally. Disconnect does not revoke upstream authorization. Custom app replacement, Windows/Tauri packaging and signing, and provider staging verification are not part of this preview. Legacy configured deployments use the mode below; populated legacy data cannot be claimed in preview mode.
+Setup is owner-only. The preview UI can toggle new repository authorization and connect, reconnect, or disconnect a repository locally. Disconnect does not revoke upstream authorization. Browser-managed app replacement, the Windows installer and signing, and provider staging verification are not part of this preview. Legacy configured deployments use the mode below; populated legacy data cannot be claimed in preview mode.
 
 #### Legacy file-configured mode
 
@@ -58,6 +58,16 @@ The portal's Active Sessions and Statistics screens distinguish an unavailable b
 Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. The container smoke checks the built application, not the Bash helpers themselves.
 
 `npm run check` uses the shared strict TypeScript settings for the server, Svelte, tests, and tooling, including declaration-file checks. The compiler is pinned to the newest stable release supported by `svelte-check`; see the [dependency baseline](docs/superpowers/specs/2026-11-26-npm-dependencies.md#exact-pins).
+
+## Stage the Windows runtime
+
+On Windows x64, use Git Bash and download `node-v24.22.3-win-x64.zip` from the [official Node release directory](https://nodejs.org/dist/v24.22.3/). Point `NPM_CONFIG_USERCONFIG` at the approved npm registry configuration outside the checkout, then run:
+
+```bash
+bash scripts/package-windows-sidecar.sh /path/to/node-v24.22.3-win-x64.zip /path/to/new-stage
+```
+
+The script checks the ZIP against the pinned SHA-256, builds committed `HEAD` with pinned npm, and stages only the executable, its license, compiled Factory files and production dependencies. It runs the packaged Node and SQLite against a fresh database before exposing the output. This is a staging directory, not an installer or a supervised desktop application.
 
 ## Verify the Linux image
 
