@@ -51,7 +51,7 @@ it.each([
   [new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }), 'RATE_LIMITED'],
   [new Response('', { status: 403, headers: { 'retry-after': '1' } }), 'RATE_LIMITED'],
   [new Response('', { status: 429, headers: { 'retry-after': '1' } }), 'RATE_LIMITED'],
-  [new Response('', { status: 404 }), 'NOT_FOUND'],
+  [new Response('', { status: 404 }), 'ACCESS_DENIED'],
   [new Response('', { status: 502 }), 'PROVIDER_ERROR'],
   [new Response('invalid json'), 'PROVIDER_ERROR'],
   [Response.json({ bad: [] }), 'PROVIDER_ERROR'],
@@ -83,6 +83,8 @@ it('normalizes active, closed and merged pull requests and distinguishes authors
   ]);
   expect(pulls[0]?.checks).toMatchObject({ headRevision: 'head-1', total: null });
   expect(fetcher.mock.calls[0]?.[0]).toContain('https://api.github.com/');
+  await expect(adapter([new Response('', { status: 404 })]).client.pullRequests())
+    .rejects.toMatchObject({ code: 'ACCESS_DENIED' });
   await expect(adapter([Response.json([{ ...ghPull, state: 'invalid' }])]).client.pullRequests())
     .rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
 });
@@ -98,6 +100,8 @@ it('fetches exact GitHub issue detail and only the requested comments page', asy
   });
   expect(fetcher.mock.calls[1]?.[0]).toContain('/issues/99/comments?per_page=5&page=2');
   await expect(client.issue('not-id', 5, null)).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+  await expect(adapter([new Response('', { status: 404 })]).client.issue('99', 5, null))
+    .rejects.toMatchObject({ code: 'NOT_FOUND' });
   await expect(adapter([Response.json({ ...ghIssue, pull_request: {} })]).client.issue('99', 5, null))
     .rejects.toMatchObject({ code: 'NOT_FOUND' });
   const plain = adapter([Response.json({ ...ghIssue, body: null }), Response.json([])]);
@@ -132,12 +136,17 @@ it('normalizes Azure pull requests, work item detail and the next opaque comment
     Response.json({ value: [{ pullRequestId: 12, title: 'PR', status: 'completed', sourceRefName: 'refs/heads/work', targetRefName: 'refs/heads/main', createdBy: other }] }),
     Response.json(workItem),
     Response.json({ value: [{ name: 'Custom Complete', category: 'Completed' }] }),
-    Response.json({ comments: [{ id: 1, createdBy: other, createdDate: date, text: '<p>Comment</p>' }], continuationToken: 'continue' }),
+    Response.json({ comments: [
+      { id: 1, createdBy: other, createdDate: date, text: '<p>Comment</p>', format: 'html' },
+      { id: 2, createdBy: other, createdDate: date, text: '**Comment**', format: 'markdown' },
+      { id: 3, createdBy: other, createdDate: date, text: 'Legacy comment' },
+    ], continuationToken: 'continue' }),
   ], ado);
   expect((await client.pullRequests())[0]).toMatchObject({ state: 'merged', origin: 'other' });
   const detail = await client.issue('221', 10, 'opaque+cursor');
   expect(detail.description).toEqual({ format: 'html', content: '<p>Task</p>' });
   expect(detail.comments.nextCursor).toBe('continue');
+  expect(detail.comments.items.map(({ body }) => body.format)).toEqual(['html', 'markdown', 'text']);
   expect(fetcher.mock.calls[3]?.[0]).toContain('continuationToken=opaque%2Bcursor');
 });
 
@@ -186,4 +195,21 @@ it('reports unsupported or unauthorized CI sources as unavailable, never as zero
   await expect(adapter([
     Response.json({ head: { sha: 'h' } }), new Response('', { status: 500 }), Response.json([]),
   ]).client.checks('12', 'h')).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+});
+
+it('propagates confirmed CI credential denial before the sibling scan finishes', async () => {
+  const { client, fetcher } = adapter([
+    Response.json({ head: { sha: 'h' } }), new Response('', { status: 401 }),
+  ]);
+  const slow = Promise.withResolvers<Response>();
+  fetcher.mockImplementationOnce(() => slow.promise);
+  const result = client.checks('12', 'h');
+  const observed = vi.fn();
+  const rejected = result.catch((error: unknown) => { observed(error); });
+  try {
+    await vi.waitFor(() => expect(observed).toHaveBeenCalledWith(expect.objectContaining({ code: 'ACCESS_DENIED' })), { timeout: 500 });
+  } finally {
+    slow.resolve(Response.json([]));
+    await rejected;
+  }
 });

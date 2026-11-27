@@ -40,6 +40,24 @@ function person(value: unknown): IssueRow['author'] {
   const person = object(value);
   return { id: id(person['id']), displayName: text(person['login'] ?? person['displayName']) };
 }
+function commentFormat(value: unknown): 'markdown' | 'html' | 'text' {
+  if (value === 'markdown' || value === 'html') return value;
+  return 'text';
+}
+
+function listFailure(error: unknown): never {
+  if (error instanceof ApiFailure && error.code === 'NOT_FOUND') throw new ApiFailure('ACCESS_DENIED');
+  throw error;
+}
+
+async function checkSource<T>(pending: Promise<T>) {
+  try {
+    return { status: 'fulfilled', value: await pending } as const;
+  } catch (error) {
+    if (error instanceof ApiFailure && error.code === 'ACCESS_DENIED') throw error;
+    return { status: 'rejected', reason: error } as const;
+  }
+}
 
 export function createRepositoryProvider(connection: RepositoryAccess, token: string, fetcher = fetch): RepositoryProvider {
   const { target } = connection;
@@ -146,7 +164,8 @@ export function createRepositoryProvider(connection: RepositoryAccess, token: st
 
   return {
     async issues() {
-      if (github) return (await ghPages(`${git}/issues?state=all`)).filter((entry) => !entry['pull_request']).map(githubIssue);
+      if (github) return (await ghPages(`${git}/issues?state=all`).catch(listFailure))
+        .filter((entry) => !entry['pull_request']).map(githubIssue);
       const rows: IssueRow[] = [];
       let after = 0;
       for (let page = 1; page <= 20; page++) {
@@ -168,7 +187,7 @@ export function createRepositoryProvider(connection: RepositoryAccess, token: st
       throw new ApiFailure('ACCESS_UNVERIFIED');
     },
     async pullRequests() {
-      if (github) return (await ghPages(`${git}/pulls?state=all`)).map(pull);
+      if (github) return (await ghPages(`${git}/pulls?state=all`).catch(listFailure)).map(pull);
       return (await pages((page) =>
         `${git}/pullrequests?${version}&searchCriteria.status=all&$top=100&$skip=${(page - 1) * 100}`,
         (data) => list(object(data)['value']), (length) => length === 100)).map(pull);
@@ -188,7 +207,7 @@ export function createRepositoryProvider(connection: RepositoryAccess, token: st
           items: list(github ? comments.data : object(comments.data)['comments']).map((row) => ({
             id: id(row['id']), author: person(github ? row['user'] : row['createdBy']),
             createdAt: text(github ? row['created_at'] : row['createdDate']),
-            body: { format, content: optionalText(github ? row['body'] : row['text']) },
+            body: { format: github ? format : commentFormat(row['format']), content: optionalText(github ? row['body'] : row['text']) },
           })),
           nextCursor: github ? (comments.next ? String(Number(cursor ?? '1') + 1) : null) :
             optionalText(object(comments.data)['continuationToken']) || null,
@@ -203,15 +222,10 @@ export function createRepositoryProvider(connection: RepositoryAccess, token: st
       if (!github) return unavailable;
       try {
         const commit = `${git}/commits/${encoded(head)}`;
-        const [runPage, statusPage] = await Promise.allSettled([
-          ghPages(`${commit}/check-runs`, (data) => list(object(data)['check_runs']), true),
-          ghPages(`${commit}/statuses`, list, true),
+        const [runPage, statusPage] = await Promise.all([
+          checkSource(ghPages(`${commit}/check-runs`, (data) => list(object(data)['check_runs']), true)),
+          checkSource(ghPages(`${commit}/statuses`, list, true)),
         ]);
-        for (const page of [runPage, statusPage]) {
-          if (page.status === 'rejected' && page.reason instanceof ApiFailure && page.reason.code === 'ACCESS_DENIED') {
-            throw page.reason;
-          }
-        }
         if (runPage.status === 'rejected') throw runPage.reason;
         if (statusPage.status === 'rejected') throw statusPage.reason;
         const runs = runPage.value;

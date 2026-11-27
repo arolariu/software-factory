@@ -378,7 +378,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       const row = getConnection(connectionId, requester.id);
       if (!row?.grant_id) return undefined;
       const grant = getGrant(row.grant_id, requester.id);
-      if (!grant || !bound(grant)) throw new ApiFailure('ACCESS_UNVERIFIED');
+      if (!grant || !bound(grant)) throw new ApiFailure('ACCESS_DENIED');
       const providerName = row.provider === 'github' ? 'github' : 'azure-devops';
       const { target } = registry.repository(row.canonical_url, providerName);
       return {
