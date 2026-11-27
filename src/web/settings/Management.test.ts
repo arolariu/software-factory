@@ -138,3 +138,27 @@ it('resumes the paired browser flow after reloading without showing the pairing 
   await vi.waitFor(() => expect(root.textContent).toContain('ABCD-EFGH'));
   expect(root.querySelector('input[type=password]')).toBeNull();
 });
+
+it('allows entering a fresh host code after cancelling an expired pairing', async () => {
+  let paired = true;
+  const active = { flowId: 'original', browserInstructions: { userCode: 'ABCD-EFGH' } };
+  vi.stubGlobal('fetch', vi.fn(async (path, init?: RequestInit) => {
+    if (path === '/api/setup/status') return json({ state: 'unclaimed', pairingAvailable: true, paired, signInAvailable: true });
+    if (path === '/api/me') return new Response(null, { status: 401 });
+    if (path === '/api/auth/csrf') return json({ csrfToken: 'fixture' });
+    if (path === '/api/authorization/flows/original' && init?.method === 'DELETE') { paired = false; return noContent(); }
+    if (path === '/api/setup/pair') { paired = true; return noContent(); }
+    if (path === '/api/authorization/flows') {
+      return init?.method === 'POST'
+        ? json({ flowId: 'new', browserInstructions: { userCode: 'WXYZ-ABCD' } })
+        : json({ flow: paired ? active : null });
+    }
+    return json({ revision: null, builtAt: null, runUrl: null });
+  }));
+  const root = mountSetup();
+  await click(root, 'Cancel authorization');
+  await page.getByLabelText('Host pairing code').fill('fresh-code', { timeout: 2_000 });
+  await click(root, 'Pair this browser');
+  await click(root, 'Sign in with GitHub');
+  await vi.waitFor(() => expect(root.textContent).toContain('WXYZ-ABCD'));
+});

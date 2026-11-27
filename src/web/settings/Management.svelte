@@ -40,10 +40,14 @@
     finally { busy = false; }
   }
 
-  async function load() {
+  async function loadSetup() {
     setup = await read<SetupStatus>('/api/setup/status');
     paired = setup.paired;
-    if (setup.signInAvailable) {
+    return setup;
+  }
+
+  async function load() {
+    if ((await loadSetup()).signInAvailable) {
       const active = await read<{ flow: Flow | null }>('/api/authorization/flows');
       flow = active.flow ?? undefined;
     }
@@ -92,6 +96,7 @@
     void perform(async () => {
       await mutate(`/api/authorization/flows/${current.flowId}`, 'DELETE');
       flow = undefined;
+      if (!me) await loadSetup();
     });
   }
 
