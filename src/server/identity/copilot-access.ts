@@ -20,7 +20,7 @@ interface RuntimeOptions {
 type Runtime = AccessReader & { start(): Promise<void>; forceStop(): Promise<void> };
 
 async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
-  // The optional SDK's declaration files do not pass exactOptionalPropertyTypes.
+  // The pinned SDK declaration exception and upgrade checks are documented in the dependency baseline.
   const packageName: string = '@github/copilot-sdk';
   const { CopilotClient } = await import(packageName) as { CopilotClient: new (options: RuntimeOptions) => Runtime };
   return new CopilotClient(options);
@@ -84,7 +84,7 @@ export async function runCopilotAccessCheck(
     authorizeCopilotCheck(id, createGitHubDeviceFlow(), display, wait, Date.now),
   inspect = inspectWithSdk,
 ): Promise<number> {
-  if (!terminal || !clientId || !/^[A-Za-z0-9_-]+$/.test(clientId)) {
+  if (!terminal || !clientId || !/^[A-Za-z0-9_.-]+$/.test(clientId)) {
     report('Run from an interactive terminal with FACTORY_GITHUB_CLIENT_ID set to the public GitHub App Client ID.');
     return 2;
   }
@@ -92,7 +92,7 @@ export async function runCopilotAccessCheck(
     const token = await authorize(clientId, (code) => show(`Open ${githubDeviceApproval} and enter ${code}.`));
     const result = await inspect(token);
     show(JSON.stringify(result));
-    return result.state === 'authenticated' && result.models > 0 ? 0 : 1;
+    return result.state === 'authenticated' && result.models > result.disabledByPolicy ? 0 : 1;
   } catch {
     report('Copilot access was not verified. Check device approval, account access, and organization policy, then retry.');
     return 1;

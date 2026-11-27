@@ -104,8 +104,16 @@ it('uses only the fresh token and discloses no credentials in the report', async
 it.each([
   { state: 'unverified' },
   { state: 'authenticated', login: 'fixture', models: 0, disabledByPolicy: 0 },
+  { state: 'authenticated', login: 'fixture', models: 2, disabledByPolicy: 2 },
 ] as const)('does not report verification for inconclusive evidence (%j)', async (result) => {
   expect(await runCopilotAccessCheck('fixture-client', true, vi.fn(), vi.fn(), async () => 'ghu_fixture', async () => result)).toBe(1);
+});
+
+it('accepts a legacy dotted GitHub App Client ID', async () => {
+  const authorize = vi.fn(async () => 'ghu_fixture');
+  const inspect = async () => ({ state: 'authenticated', login: 'fixture', models: 2, disabledByPolicy: 1 } as const);
+  expect(await runCopilotAccessCheck('Iv1.0123456789abcdef', true, vi.fn(), vi.fn(), authorize, inspect)).toBe(0);
+  expect(authorize).toHaveBeenCalledWith('Iv1.0123456789abcdef', expect.any(Function));
 });
 
 it('times out and stops a stuck Copilot runtime without printing raw provider errors', async () => {
