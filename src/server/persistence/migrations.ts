@@ -6,8 +6,10 @@ interface Migration {
   sql: string;
 }
 
+const readMigration = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
+
 const migrations: readonly Migration[] = [
-  { version: 1, sql: readFileSync(new URL('./001-foundation.sql', import.meta.url), 'utf8') },
+  { version: 1, sql: readMigration('./001-foundation.sql') },
 ];
 
 const requiredTables = ['users', 'identities', 'repositories', 'repo_connections', 'repo_snapshots', 'tasks'];

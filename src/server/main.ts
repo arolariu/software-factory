@@ -14,6 +14,7 @@ interface StartupOptions {
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
+const invalidPort = 'PORT must be a valid TCP port.';
 
 export function verifyContainerData(dataDir: string, mode: number, mountInfo: string): void {
   const filesystem = mountInfo.split('\n')
@@ -23,16 +24,23 @@ export function verifyContainerData(dataDir: string, mode: number, mountInfo: st
   }
 }
 
+function verifyDataDirectory(dataDir: string, container: boolean | undefined): void {
+  const info = statSync(dataDir);
+  if (!info.isDirectory()) throw new Error('Factory data path must be a directory.');
+  if (container) verifyContainerData(dataDir, info.mode, readFileSync('/proc/self/mountinfo', 'utf8'));
+  accessSync(dataDir, constants.W_OK);
+}
+
+function parsePort(value: string): number {
+  if (!/^[0-9]+$/.test(value) || Number(value) === 0) throw new Error(invalidPort);
+  return Number(value);
+}
+
 export async function startServer(options: StartupOptions) {
   const { port, artifactDir, logger = false } = options;
   const dataDir = resolve(options.dataDir);
-  if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) {
-    throw new Error('PORT must be a valid TCP port.');
-  }
-  const dataInfo = statSync(dataDir);
-  if (!dataInfo.isDirectory()) throw new Error('Factory data path must be a directory.');
-  if (options.container) verifyContainerData(dataDir, dataInfo.mode, readFileSync('/proc/self/mountinfo', 'utf8'));
-  accessSync(dataDir, constants.W_OK);
+  if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) throw new Error(invalidPort);
+  verifyDataDirectory(dataDir, options.container);
 
   const build = JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
   const db = openDatabase(join(dataDir, 'factory.sqlite'));
@@ -61,12 +69,9 @@ export async function startServer(options: StartupOptions) {
 
 export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
   try {
-    const value = env['PORT'] ?? '3000';
-    if (!/^[0-9]+$/.test(value) || Number(value) === 0) throw new Error('PORT must be a valid TCP port.');
-    const port = Number(value);
     const server = await startServer({
       dataDir: env['FACTORY_DATA_DIR'] ?? '/data',
-      port,
+      port: parsePort(env['PORT'] ?? '3000'),
       artifactDir,
       container: args.includes('--container'),
       logger: true,
