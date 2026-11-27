@@ -24,7 +24,7 @@ interface StartupOptions {
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
 const invalidPort = 'PORT must be a valid TCP port.';
-const desktopOrigin = 'https://factory.localhost';
+export const desktopOrigin = 'https://factory.localhost';
 const channelPattern = /^[a-f0-9]{64}$/;
 
 function desktopChannel(token: string): NonNullable<BuildAppOptions['allowRequest']> {

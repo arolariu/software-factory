@@ -57,6 +57,8 @@ src/server/management/**
 !src/server/management/vault-key.ts
 !src/server/management/runtime.ts
 !src/server/management/authorization.ts
+!src/server/management/desktop-sidecar.ts
+!src/server/management/desktop-sidecar.test.ts
 !src/server/management/settings.ts
 !src/server/management/operator.ts
 !src/server/management/owner-rebind.ts
