@@ -10,12 +10,14 @@ const migrations: readonly Migration[] = [
   { version: 1, sql: readFileSync(new URL('./001-foundation.sql', import.meta.url), 'utf8') },
   { version: 2, sql: readFileSync(new URL('./002-identity.sql', import.meta.url), 'utf8') },
   { version: 3, sql: readFileSync(new URL('./003-repository-sync.sql', import.meta.url), 'utf8') },
+  { version: 4, sql: readFileSync(new URL('./004-management.sql', import.meta.url), 'utf8') },
 ];
 
 const requiredTables = [
   'users', 'identities', 'repositories', 'repo_connections', 'repo_snapshots', 'tasks',
   'portal_sessions', 'oauth_intents', 'delegated_grants', 'connection_access', 'copilot_defaults', 'legacy_portal_claims',
   'repository_sources', 'repository_rows', 'repository_sync',
+  'management_owner', 'management_pairing', 'management_claims', 'management_pair_attempts',
 ];
 const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item', 'repository_sync_in_flight'];
 

@@ -7,6 +7,7 @@ import { ApiSchemas } from '../shared/api/schemas.js';
 import type { PortalOptions } from './http/portal-modules.js';
 import { ApiFailure, sendProblem } from './http/problems.js';
 import { isPortalPath, registerPortalRoutes } from './http/routes.js';
+import { registerManagementRoutes, type ManagementRoutes } from './http/management-routes.js';
 import { hasCurrentSchema } from './persistence/migrations.js';
 
 export interface BuildMetadata {
@@ -22,6 +23,7 @@ export interface BuildAppOptions {
   isDraining?: () => boolean;
   logger?: boolean;
   portal?: PortalOptions;
+  management?: ManagementRoutes;
 }
 
 function pathSegments(target: string): string[] {
@@ -90,7 +92,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     reply.header('Cache-Control', 'no-store');
     return options.build;
   });
-  registerPortalRoutes(app, options.portal);
+  registerPortalRoutes(app, options.portal, options.management?.setup.preSession);
+  if (options.management) registerManagementRoutes(app, options.management);
   app.setNotFoundHandler((request, reply) => {
     if (isPageNavigation(request)) {
       return reply.header('Cache-Control', 'no-cache').sendFile('index.html', staticRoot, { cacheControl: false });

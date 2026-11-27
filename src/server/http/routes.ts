@@ -27,24 +27,25 @@ function accepted(reply: FastifyReply, kind: 'tasks' | 'operations', result: unk
   return reply.header('Location', `/api/${kind}/${encodeURIComponent(id)}`).code(202).send(result);
 }
 
-function sessionId(request: FastifyRequest): string | undefined {
+export function sessionId(request: FastifyRequest): string | undefined {
   const cookie = request.cookies[cookieName];
   return cookie && /^[A-Za-z0-9_-]{1,256}$/.test(cookie) ? cookie : undefined;
 }
 
-function setSession(reply: FastifyReply, session: string) {
+export function setSession(reply: FastifyReply, session: string) {
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(session)) throw new ApiFailure('INTERNAL_ERROR');
   reply.setCookie(cookieName, session, cookieOptions);
 }
 
 const portalPath = new RegExp(
-  `^/(?:connections(?:/${opaqueIdSegment}(?:/(?:issues|pull-requests|tasks))?)?|settings(?:/(?:factory|copilot|repository))?|active-sessions|statistics)?$`,
+  `^/(?:setup|connections(?:/${opaqueIdSegment}(?:/(?:issues|pull-requests|tasks))?)?|settings(?:/(?:factory|copilot|repository))?|active-sessions|statistics)?$`,
 );
 export function isPortalPath(path: string): boolean {
   return !/[\r\n]/.test(path) && portalPath.test(path);
 }
 
-export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptions): void {
+export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptions,
+  preSession?: PortalModules['identity']['csrf']): void {
   app.register(cookiePlugin);
   function modules(): PortalModules {
     if (!options) throw new ApiFailure('TEMPORARILY_UNAVAILABLE');
@@ -109,7 +110,7 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
   }
 
   route('GET', '/api/auth/csrf', {}, async (request, reply) => {
-    const csrf = await modules().identity.csrf(sessionId(request));
+    const csrf = await (preSession ?? modules().identity.csrf)(sessionId(request));
     if (csrf.sessionId !== undefined) setSession(reply, csrf.sessionId);
     return json(reply, s.csrf, { csrfToken: csrf.csrfToken });
   });

@@ -14,6 +14,7 @@ src/shared/**
 !src/shared/api/
 src/shared/api/**
 !src/shared/api/schemas.ts
+!src/shared/api/management-schemas.ts
 !src/shared/api/schemas.test.ts
 !src/server/
 src/server/**
@@ -24,6 +25,8 @@ src/server/http/**
 !src/server/http/portal-modules.ts
 !src/server/http/problems.ts
 !src/server/http/routes.ts
+!src/server/http/management-routes.ts
+!src/server/http/management-routes.test.ts
 !src/server/http/routes.test.ts
 !src/server/main.ts
 !src/server/main.test.ts
@@ -32,6 +35,14 @@ src/server/persistence/**
 !src/server/persistence/001-foundation.sql
 !src/server/persistence/002-identity.sql
 !src/server/persistence/003-repository-sync.sql
+!src/server/persistence/004-management.sql
+!src/server/management/
+src/server/management/**
+!src/server/management/setup.ts
+!src/server/management/setup.test.ts
+!src/server/management/vault-key.ts
+!src/server/management/runtime.ts
+!src/server/management/operator.ts
 !src/server/repositories/
 src/server/repositories/**
 !src/server/repositories/provider.ts

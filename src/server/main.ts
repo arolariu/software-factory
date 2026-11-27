@@ -5,6 +5,8 @@ import { buildApp, type BuildMetadata } from './build-app.js';
 import { openIdentityPortal, type IdentityFiles } from './identity/portal.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
+import { openManagementRuntime } from './management/runtime.js';
+import { issueOperatorCode } from './management/operator.js';
 
 interface StartupOptions {
   dataDir: string;
@@ -13,6 +15,7 @@ interface StartupOptions {
   container?: boolean;
   logger?: boolean;
   identity?: IdentityFiles;
+  management?: { publicOrigin: string };
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
@@ -39,15 +42,19 @@ export async function startServer(options: StartupOptions) {
   const build = JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
   const db = openDatabase(join(dataDir, 'factory.sqlite'));
   let auth: ReturnType<typeof openIdentityPortal> | undefined;
+  let management: ReturnType<typeof openManagementRuntime> | undefined;
   let draining = false;
 
   try {
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
+    if (options.management && options.identity) throw new Error('Configure either management mode or legacy identity, not both.');
+    if (options.management) management = openManagementRuntime(db, dataDir, options.management.publicOrigin);
     if (options.identity) auth = openIdentityPortal(db, dataDir, options.identity);
     const app = await buildApp({
       db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger,
       ...(auth && { portal: auth.portal }),
+      ...(management && { management }),
     });
     const address = await app.listen({ host: '0.0.0.0', port });
     auth?.start();
@@ -59,12 +66,14 @@ export async function startServer(options: StartupOptions) {
         await app.close();
       } finally {
         await auth?.close();
+        management?.close();
         db.close();
       }
     };
     return { address, close };
   } catch (error) {
     await auth?.close();
+    management?.close();
     db.close();
     throw error;
   }
@@ -72,16 +81,26 @@ export async function startServer(options: StartupOptions) {
 
 export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
   try {
+    const dataDir = env['FACTORY_DATA_DIR'] ?? '/data';
+    const configFile = env['FACTORY_IDENTITY_CONFIG_FILE'];
+    const managed = env['FACTORY_MANAGEMENT_MODE'] === '1';
+    const publicOrigin = env['FACTORY_PUBLIC_ORIGIN'] ?? '';
+    if (args[2] === 'setup-code') {
+      if (!managed || configFile !== undefined) throw new Error('Setup code issuance requires management mode.');
+      const code = issueOperatorCode(dataDir, publicOrigin, process.stdout.isTTY === true);
+      process.stdout.write(`${code.code}\n`);
+      return undefined;
+    }
     const value = env['PORT'] ?? '3000';
     if (!/^[0-9]+$/.test(value) || Number(value) === 0) throw new Error('PORT must be a valid TCP port.');
     const port = Number(value);
-    const configFile = env['FACTORY_IDENTITY_CONFIG_FILE'];
     const server = await startServer({
-      dataDir: env['FACTORY_DATA_DIR'] ?? '/data',
+      dataDir,
       port,
       artifactDir,
       container: args.includes('--container'),
       logger: true,
+      ...(managed && { management: { publicOrigin } }),
       ...(configFile !== undefined && { identity: {
         configFile, keyFile: env['FACTORY_CREDENTIAL_KEY_FILE'] ?? '/run/secrets/identity-key',
       } }),

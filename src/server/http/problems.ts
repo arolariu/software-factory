@@ -18,6 +18,8 @@ const problems = {
   STALE_QUESTION: [409, 'Question is no longer pending'],
   TASK_ALREADY_ACTIVE: [409, 'Task already active'],
   RATE_LIMITED: [429, 'Too many requests'],
+  SETUP_CODE_INVALID: [400, 'Setup could not be verified'],
+  SETUP_ALREADY_CLAIMED: [409, 'Factory setup is already complete'],
   INTERNAL_ERROR: [500, 'Internal server error'],
   PROVIDER_ERROR: [502, 'Provider request failed'],
   ACCESS_UNVERIFIED: [503, 'Access could not be verified'],
