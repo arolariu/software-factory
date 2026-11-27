@@ -19,6 +19,7 @@ src/shared/api/**
 src/server/**
 !src/server/build-app.ts
 !src/server/build-app.test.ts
+!src/server/digest.ts
 !src/server/http/
 src/server/http/**
 !src/server/http/navigation.ts
@@ -42,6 +43,8 @@ src/server/identity/**
 !src/server/identity/oauth.test.ts
 !src/server/identity/module.ts
 !src/server/identity/module.test.ts
+!src/server/identity/records.ts
+!src/server/identity/store.ts
 !src/server/identity/portal.ts
 !src/server/identity/portal.test.ts
 !src/server/persistence/migrations.ts
