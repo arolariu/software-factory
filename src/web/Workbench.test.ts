@@ -265,4 +265,3 @@ it('renders the last snapshot as stale and reports unavailable issue details wit
   expect(target.textContent).toContain('Stale snapshot');
   expect(target.textContent).toContain('Document startup');
 });
-
