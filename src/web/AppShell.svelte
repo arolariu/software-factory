@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { opaqueIdSegment } from '../shared/api/schemas.js';
   import Management from './settings/Management.svelte';
   import Workbench from './Workbench.svelte';
   import ActiveSessions from './ActiveSessions.svelte';
@@ -9,7 +10,8 @@
   const path = location.pathname;
   const management = path === '/setup' || path === '/settings/factory';
   const saved = sessionStorage.getItem('factory.last-workbench') ?? '';
-  const repositoriesHref = /^\/connections\/[A-Za-z0-9._-]+\/(?:issues|pull-requests)\?state=(?:open|closed|active)$/.test(saved) ? saved : '/';
+  const savedPane = new RegExp(`^/connections/${opaqueIdSegment}/(?:issues|pull-requests)\\?state=(?:open|closed|active)$`);
+  const repositoriesHref = savedPane.test(saved.replace(/%3a/gi, ':')) ? saved.replace(/:|%3a/gi, '%3A') : '/';
 
   onMount(() => {
     const controller = new AbortController();

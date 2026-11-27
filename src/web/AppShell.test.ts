@@ -30,13 +30,17 @@ function show(response: Response) {
   app = mount(AppShell, { target });
 }
 
-it.each([['/active-sessions', 'Active Sessions'], ['/statistics', 'Statistics']] as const)(
-  'routes %s to its report with a return link to the selected repository pane', async (path, title) => {
+it.each([
+  ['/active-sessions', 'Active Sessions', '/connections/github%3A123/pull-requests?state=active', '/connections/github%3A123/pull-requests?state=active'],
+  ['/statistics', 'Statistics', '/connections/github:123/pull-requests?state=closed', '/connections/github%3A123/pull-requests?state=closed'],
+  ['/statistics', 'Statistics', '/connections/github%2F123/pull-requests?state=closed', '/'],
+] as const)(
+  'routes %s to its report and validates the saved repository pane (%s, %s)', async (path, title, saved, href) => {
     history.replaceState(null, '', path);
-    sessionStorage.setItem('factory.last-workbench', '/connections/r.1/pull-requests?state=active');
+    sessionStorage.setItem('factory.last-workbench', saved);
     show(Response.json({ revision, builtAt, runUrl: null }));
     await vi.waitFor(() => expect(target.querySelector('main h2')?.textContent).toBe(title));
-    expect(target.querySelector('header a')?.getAttribute('href')).toBe('/connections/r.1/pull-requests?state=active');
+    expect(target.querySelector('header a')?.getAttribute('href')).toBe(href);
   },
 );
 
