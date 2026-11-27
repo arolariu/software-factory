@@ -22,9 +22,8 @@ const config = strictObject({
 });
 
 type App = Omit<Static<typeof app>, 'secret'> & { secret?: string; flow?: 'device' };
-export type GitHubHostProfile = Omit<Static<typeof profile>, 'registrations'> & {
-  registrations: { portal: App; repository?: App; copilot?: App };
-};
+export type GitHubHostProfile = Static<typeof profile>;
+type GitHubDeviceProfile = { hostname: 'github.com'; label: string; deviceClientId: string };
 export type Purpose = 'portal' | 'repository' | 'copilot';
 export type IdentityProvider = 'github' | 'azure_devops';
 export interface Registration extends App {
@@ -47,14 +46,14 @@ export const storedProvider = (provider: AuthorizationProvider): IdentityProvide
 export const apiProvider = (provider: IdentityProvider): AuthorizationProvider =>
   provider === 'github' ? 'github' : 'azure-devops';
 
-export function createRegistry(hosts: readonly GitHubHostProfile[], azureDevOps?: Static<typeof entra>) {
+export function createRegistry(hosts: readonly (GitHubHostProfile | GitHubDeviceProfile)[], azureDevOps?: Static<typeof entra>) {
   const entries = new Map<string, Registration>();
   const labels = new Map<string, string>();
   const appIds = new Set<string>();
 
-  function add(spec: App, options: Omit<Registration, keyof App | 'binding'>) {
+  function add(spec: App, options: Omit<Registration, keyof App | 'binding'>, shareDeviceApp = false) {
     const appKey = JSON.stringify([options.issuer, spec.clientId]);
-    if (appIds.has(appKey)) throw new Error('Authorization purposes require distinct app registrations.');
+    if (appIds.has(appKey) && !shareDeviceApp) throw new Error('Authorization purposes require distinct app registrations.');
     appIds.add(appKey);
     const binding = sha256Hex(JSON.stringify([options, spec.id, spec.clientId, ...(spec.flow ? [spec.flow] : [])]));
     entries.set(`${options.hostId}:${options.purpose}`, { ...spec, ...options, binding });
@@ -66,14 +65,20 @@ export function createRegistry(hosts: readonly GitHubHostProfile[], azureDevOps?
     }
     labels.set(id, host.label);
     const apiOrigin = id === 'github.com' ? 'https://api.github.com' : `https://api.${id}`;
+    const shareDeviceApp = 'deviceClientId' in host;
+    let registrations: Partial<Record<Purpose, App>>;
+    if (shareDeviceApp) {
+      const device = { id: host.deviceClientId, clientId: host.deviceClientId, flow: 'device' as const };
+      registrations = { portal: device, repository: device };
+    } else registrations = host.registrations;
     for (const purpose of ['portal', 'repository', 'copilot'] as const) {
-      const spec = host.registrations[purpose];
+      const spec = registrations[purpose];
       if (!spec) continue;
       add(spec, {
         hostId: id, issuer: id, provider: 'github', purpose, apiOrigin,
         authorizeUrl: `https://${id}/login/oauth/authorize`, tokenUrl: `https://${id}/login/oauth/access_token`,
         profileUrl: `${apiOrigin}/user`, requestedScope: spec.scope ?? 'offline_access',
-      });
+      }, shareDeviceApp);
     }
   }
   if (azureDevOps) {

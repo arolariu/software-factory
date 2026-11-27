@@ -29,8 +29,7 @@ export function assertManagementData(db: SQLite.Database) {
 
 export interface ManagementOptions {
   publicOrigin: string;
-  githubPortalClientId?: string;
-  githubRepositoryClientId?: string;
+  githubClientId?: string;
 }
 
 export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch) {
@@ -38,14 +37,10 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
   const setup = assertManagementData(db);
   const vaultPath = join(dataDir, 'credentials.sqlite');
   const key = loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), existsSync(vaultPath));
-  const registration = (clientId: string) => ({ id: clientId, clientId, flow: 'device' as const });
+  const { githubClientId } = options;
   try {
-    const registry = createRegistry(options.githubPortalClientId ? [{
-      hostname: 'github.com', label: 'GitHub',
-      registrations: {
-        portal: registration(options.githubPortalClientId),
-        ...(options.githubRepositoryClientId && { repository: registration(options.githubRepositoryClientId) }),
-      },
+    const registry = createRegistry(githubClientId ? [{
+      hostname: 'github.com', label: 'GitHub', deviceClientId: githubClientId,
     }] : []);
     const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const vault = openCredentialVault(vaultPath, key);
@@ -53,8 +48,8 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
     const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {
       ...options, signal: AbortSignal.any([lifecycle.signal, ...(options?.signal ? [options.signal] : [])]),
     });
-    const configured = options.githubPortalClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen) : undefined;
-    const settings = options.githubPortalClientId && createManagementSettings(db, options.githubPortalClientId, options.githubRepositoryClientId);
+    const configured = githubClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen) : undefined;
+    const settings = githubClientId ? createManagementSettings(db, githubClientId) : undefined;
     const authorization = configured && settings ? createAuthorizationService({
       db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetchWhileOpen),
       repositoryAllowed: settings.repositoryAllowed,
@@ -63,7 +58,7 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
     let pending: Promise<void> | undefined;
     const stop = () => { clearInterval(timer); lifecycle.abort(); configured?.stop(); };
     return {
-      origin, setup, authorization, portal: configured?.portal, settings: settings || undefined,
+      origin, setup, authorization, portal: configured?.portal, settings,
       disconnectRepository: configured?.identity.disconnectRepository,
       start() {
         configured?.start();

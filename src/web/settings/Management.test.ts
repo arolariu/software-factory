@@ -63,7 +63,7 @@ it('pairs, completes GitHub sign-in, toggles settings and manages repository aut
     }
     if (path === '/api/settings/instance') {
       if (method === 'PUT') allowed = !allowed;
-      return json({ version: allowed ? 0 : 1, repositoryEnabled: allowed, repositoryConfigured: true, portalClientId: 'portal', repositoryClientId: 'repo' });
+      return json({ version: allowed ? 0 : 1, repositoryEnabled: allowed, githubClientId: 'factory-client' });
     }
     if (path === '/api/connections') return json({ items: [{ id: 'connection', name: 'Sample', state: connection }] });
     if (path === '/api/connections/connection/authorization') { connection = 'needs_auth'; return noContent(); }
@@ -79,9 +79,11 @@ it('pairs, completes GitHub sign-in, toggles settings and manages repository aut
   expect(root.textContent).toContain('ABCD-EFGH');
   ready = true;
   await click(root, 'Check approval');
+  await vi.waitFor(() => expect(root.textContent).toContain('GitHub App Client ID: factory-client'));
   await click(root, 'Disable repository authorization');
-  await click(root, 'Enable repository authorization');
   await page.getByLabelText('GitHub repository URL').fill('https://github.com/org/repo');
+  await expect.element(page.getByRole('button', { name: 'Connect repository' })).toBeDisabled();
+  await click(root, 'Enable repository authorization');
   await click(root, 'Connect repository');
   await click(root, 'Cancel authorization');
   await click(root, 'Reconnect Sample');
@@ -110,21 +112,6 @@ it('reports when public sign-in is not configured', async () => {
   }));
   const root = mountSetup();
   await vi.waitFor(() => expect(root.textContent).toContain('Public GitHub sign-in is not configured'));
-});
-
-it('shows when a connected owner has no repository registration', async () => {
-  vi.stubGlobal('fetch', vi.fn(async (path) => {
-    if (path === '/api/setup/status') return json({ state: 'claimed', pairingAvailable: false, signInAvailable: true });
-    if (path === '/api/authorization/flows') return json({ flow: null });
-    if (path === '/api/me') return json({ user: { displayName: 'Owner' } });
-    if (path === '/api/settings/instance') return json({ version: 0, repositoryEnabled: false, repositoryConfigured: false, portalClientId: 'portal', repositoryClientId: null });
-    if (path === '/api/connections') return json({ items: [] });
-    return json({ revision: null, builtAt: null, runUrl: null });
-  }));
-  const root = mountSetup();
-  await vi.waitFor(() => expect(root.textContent).toContain('Repository registration: Not configured'));
-  const button = [...root.querySelectorAll('button')].find((entry) => entry.textContent === 'Enable repository authorization');
-  expect(button?.disabled).toBe(true);
 });
 
 it('resumes the paired browser flow after reloading without showing the pairing input again', async () => {

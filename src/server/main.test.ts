@@ -83,19 +83,23 @@ it.each(['nfs', 'nfs4', 'cifs', 'fuse.sshfs'])('rejects container storage on %s 
   expect(() => verifyContainerData('/data', 0o700, mount)).toThrow();
 });
 
-it('registers and removes process shutdown handlers for the CLI server', async () => {
+it.each(['FACTORY_GITHUB_CLIENT_ID', 'FACTORY_GITHUB_PORTAL_CLIENT_ID'])('starts managed sign-in with %s and removes CLI shutdown handlers', async (key) => {
   const socket = createServer();
   await new Promise<void>((resolve) => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address();
   if (!port || typeof port === 'string') throw new Error('Expected a TCP port.');
   await new Promise<void>((resolve, reject) => socket.close((error) => error ? reject(error) : resolve()));
   const before = process.listenerCount('SIGTERM');
-  const server = await runCli({ FACTORY_DATA_DIR: dataDir, PORT: String(port.port) }, [], artifactDir);
-  expect(server).toBeDefined();
+  const server = await runCli({
+    FACTORY_DATA_DIR: dataDir, PORT: String(port.port), FACTORY_MANAGEMENT_MODE: '1',
+    FACTORY_PUBLIC_ORIGIN: 'https://factory.example', [key]: 'factory-client',
+  }, [], artifactDir);
+  if (!server) throw new Error('Expected a running server');
   try {
     expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+    expect(await (await fetch(`${server.address}/api/setup/status`)).json()).toMatchObject({ signInAvailable: true });
   } finally {
-    await server?.close();
+    await server.close();
   }
   expect(process.listenerCount('SIGTERM')).toBe(before);
 });
@@ -186,7 +190,7 @@ it('does not issue a setup code outside management mode or without an interactiv
     expect(report.mock.calls.at(-1)?.[1]).toMatchObject({ message: 'Setup code issuance requires management mode.' });
     await runCli({
       FACTORY_DATA_DIR: dataDir, FACTORY_MANAGEMENT_MODE: '1', FACTORY_PUBLIC_ORIGIN: 'http://factory.example',
-      FACTORY_GITHUB_PORTAL_CLIENT_ID: 'portal', FACTORY_GITHUB_REPOSITORY_CLIENT_ID: 'repo',
+      FACTORY_GITHUB_CLIENT_ID: 'factory-client',
     }, [], artifactDir);
     expect(report.mock.calls.at(-1)?.[1]).toMatchObject({ message: 'Management mode requires a canonical HTTPS public origin.' });
   } finally {

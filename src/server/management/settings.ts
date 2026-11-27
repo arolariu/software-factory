@@ -3,7 +3,7 @@ import type { InstanceSettings, UpdateInstanceSettings } from '../../shared/api/
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 
-export function createManagementSettings(db: SQLite.Database, portalClientId: string, repoClientId?: string) {
+export function createManagementSettings(db: SQLite.Database, githubClientId: string) {
   const readRow = db.prepare<[], { version: number; repository_enabled: number }>(
     'SELECT version,repository_enabled FROM management_settings WHERE singleton=1',
   );
@@ -11,9 +11,8 @@ export function createManagementSettings(db: SQLite.Database, portalClientId: st
     const stored = readRow.get();
     return {
       version: stored?.version ?? 0,
-      repositoryEnabled: !!repoClientId && stored?.repository_enabled !== 0,
-      repositoryConfigured: !!repoClientId,
-      portalClientId, repositoryClientId: repoClientId ?? null,
+      repositoryEnabled: stored?.repository_enabled !== 0,
+      githubClientId,
     };
   }
   function authorize(requester: Requester): void {
@@ -34,7 +33,6 @@ export function createManagementSettings(db: SQLite.Database, portalClientId: st
       return db.transaction(() => {
         authorize(requester);
         if (state().version !== input.version) throw new ApiFailure('SETTINGS_CHANGED');
-        if (input.repositoryEnabled && !repoClientId) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
         db.prepare(`INSERT INTO management_settings VALUES (1,?,?)
           ON CONFLICT(singleton) DO UPDATE SET version=excluded.version,repository_enabled=excluded.repository_enabled`)
           .run(input.version + 1, input.repositoryEnabled ? 1 : 0);

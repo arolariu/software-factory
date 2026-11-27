@@ -121,8 +121,8 @@
   {:else if me && settings}
     {@const currentSettings = settings}
     <p>{`Signed in as ${me.user.displayName}`}</p>
-    <p>{`Portal registration: ${settings.portalClientId}. Repository registration: ${settings.repositoryClientId ?? 'Not configured'}.`}</p>
-    <button type="button" disabled={busy || !settings.repositoryConfigured}
+    <p>{`GitHub App Client ID: ${settings.githubClientId}.`}</p>
+    <button type="button" disabled={busy}
       onclick={() => toggle(currentSettings)}>{settings.repositoryEnabled ? 'Disable repository authorization' : 'Enable repository authorization'}</button>
     <label>GitHub repository URL <input type="url" bind:value={repo} placeholder="https://github.com/org/repo" /></label>
     <button type="button" disabled={busy || !settings.repositoryEnabled || !repo} onclick={() => start({ intent: 'connect', repositoryUrl: repo })}>Connect repository</button>

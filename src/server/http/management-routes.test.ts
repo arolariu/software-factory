@@ -5,7 +5,6 @@ import { expect, it, vi } from 'vitest';
 import { buildApp } from '../build-app.js';
 import { issueOperatorCode } from '../management/operator.js';
 import { openManagementRuntime } from '../management/runtime.js';
-import { createManagementSettings } from '../management/settings.js';
 import { migrate } from '../persistence/migrations.js';
 import { openDatabase } from '../persistence/open.js';
 
@@ -62,7 +61,7 @@ it('refuses management takeover of a populated legacy database or an unsafe publ
   }
 });
 
-it('claims only via the initiating browser and completes verified GitHub repository authorization', async () => {
+it('claims only via the initiating browser and authorizes repositories explicitly with the same GitHub App', async () => {
   const root = mkdtempSync(join(tmpdir(), 'factory-device-http-'));
   const db = openDatabase(join(root, 'factory.sqlite'));
   migrate(db);
@@ -87,7 +86,7 @@ it('claims only via the initiating browser and completes verified GitHub reposit
     }] }))
     .mockResolvedValueOnce(Response.json({ repositories: [{ id: 99 }] }));
   const management = openManagementRuntime(db, root, {
-    publicOrigin: origin, githubPortalClientId: 'portal-client', githubRepositoryClientId: 'repo-client',
+    publicOrigin: origin, githubClientId: 'factory-client',
   }, wire);
   const authorization = management.authorization;
   if (!authorization || !management.portal) throw new Error('Missing management service');
@@ -153,24 +152,28 @@ it('claims only via the initiating browser and completes verified GitHub reposit
       method: 'PUT', url: '/api/settings/instance', headers: signed, payload: { version, repositoryEnabled },
     });
     const info = await app.inject({ url: '/api/settings/instance', headers: signed });
-    expect(info.json()).toMatchObject({ version: 0, repositoryEnabled: true });
+    expect(info.json()).toEqual({ version: 0, repositoryEnabled: true, githubClientId: 'factory-client' });
     expect(info.body).not.toContain('ghu_');
+    expect((await app.inject({ url: '/api/connections', headers: signed })).json()).toEqual({ items: [] });
     expect((await update(0, false)).statusCode).toBe(200);
     expect((await update(0, true)).statusCode).toBe(409);
     expect((await start(signed, { intent: 'connect', repositoryUrl: 'https://github.com/org/repo' })).statusCode).toBe(409);
     expect((await update(1, true)).statusCode).toBe(200);
-    const owner = await management.portal.modules.identity.resolveRequester(cookie.split('=')[1] ?? '');
-    if (!owner) throw new Error('Expected signed in owner');
     expect(() => management.settings?.read({ id: 'another-user' })).toThrow('ACCESS_DENIED');
-    const noRepo = createManagementSettings(db, 'portal-client');
-    expect(noRepo.read(owner).repositoryClientId).toBeNull();
-    expect(() => noRepo.update(owner, { version: 2, repositoryEnabled: true })).toThrow('CAPABILITY_UNAVAILABLE');
     expect((await app.inject({ url: '/api/settings/instance', headers: foreign })).statusCode).toBe(401);
     expect((await start(signed, { intent: 'link_copilot', hostId: 'github.com' })).statusCode).toBe(409);
     const repo = await start(signed, { intent: 'connect', repositoryUrl: 'https://github.com/org/repo' });
     const repoId = repo.json().flowId as string;
     await due(repoId);
     expect((await app.inject({ method: 'POST', url: `/api/authorization/flows/${repoId}/complete`, headers: signed })).statusCode).toBe(204);
+    const deviceStarts = wire.mock.calls.filter(([url]) => url === 'https://github.com/login/device/code');
+    expect(deviceStarts.map(([, request]) => String(request?.body))).toEqual([
+      'client_id=factory-client&scope=offline_access',
+      'client_id=factory-client&scope=offline_access',
+    ]);
+    expect(db.prepare('SELECT purpose FROM delegated_grants ORDER BY purpose').all()).toEqual([
+      { purpose: 'portal' }, { purpose: 'repository' },
+    ]);
     const connection = (await app.inject({ url: '/api/connections', headers: signed })).json().items[0];
     expect(connection.repositoryUrl).toBe('https://github.com/org/repo');
     expect((await app.inject({ url: `/api/connections/${connection.id}/issues?state=open`, headers: signed })).statusCode).toBe(200);
@@ -304,7 +307,7 @@ it('polls a durable flow in its worker and does not poll after it stops', async 
     verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5,
   })).mockResolvedValueOnce(Response.json({ error: 'expired_token' }));
   const management = openManagementRuntime(db, root, {
-    publicOrigin: 'https://factory.example', githubPortalClientId: 'portal-client',
+    publicOrigin: 'https://factory.example', githubClientId: 'factory-client',
   }, wire);
   const { sessionId } = management.setup.preSession();
   if (!sessionId || !management.authorization) throw new Error('Expected initial session');

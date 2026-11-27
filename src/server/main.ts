@@ -98,8 +98,7 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
     const configFile = env['FACTORY_IDENTITY_CONFIG_FILE'];
     const managed = env['FACTORY_MANAGEMENT_MODE'] === '1';
     const publicOrigin = env['FACTORY_PUBLIC_ORIGIN'] ?? '';
-    const githubPortalClientId = env['FACTORY_GITHUB_PORTAL_CLIENT_ID'];
-    const githubRepositoryClientId = env['FACTORY_GITHUB_REPOSITORY_CLIENT_ID'];
+    const githubClientId = env['FACTORY_GITHUB_CLIENT_ID'] ?? env['FACTORY_GITHUB_PORTAL_CLIENT_ID'];
     if (args[2] === 'setup-code') {
       if (!managed || configFile !== undefined) throw new Error('Setup code issuance requires management mode.');
       const code = issueOperatorCode(dataDir, publicOrigin, process.stdout.isTTY === true);
@@ -114,8 +113,7 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       logger: true,
       ...(managed && { management: {
         publicOrigin,
-        ...(githubPortalClientId && { githubPortalClientId }),
-        ...(githubRepositoryClientId && { githubRepositoryClientId }),
+        ...(githubClientId && { githubClientId }),
       } }),
       ...(configFile !== undefined && { identity: {
         configFile, keyFile: env['FACTORY_CREDENTIAL_KEY_FILE'] ?? '/run/secrets/identity-key',
