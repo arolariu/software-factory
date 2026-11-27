@@ -19,25 +19,31 @@ export interface BuildAppOptions {
   logger?: boolean;
 }
 
-function isPageNavigation(request: FastifyRequest): boolean {
-  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
-  const mode = request.headers['sec-fetch-mode'];
-  if (mode && mode !== 'navigate') return false;
-  const acceptsHtml = request.headers.accept?.toLowerCase().split(',').some((entry) => {
+function acceptsHtml(accept: string | undefined): boolean {
+  return accept !== undefined && accept.toLowerCase().split(',').some((entry) => {
     const mediaType = entry.slice(0, entry.search(/;|$/)).trim();
     const parameters = entry.split(';').slice(1);
     const quality = parameters.find((parameter) => /^\s*q\s*=/.test(parameter));
     return mediaType === 'text/html' && (quality === undefined || Number(quality.split('=')[1]) > 0);
   });
-  if (!acceptsHtml) return false;
-  let pathname: string;
+}
+
+function pathSegments(target: string): string[] {
+  const path = target.startsWith('/') ? target.slice(0, target.search(/\?|$/)) : new URL(target).pathname;
+  return decodeURIComponent(path).split('/').filter(Boolean);
+}
+
+function isPageNavigation(request: FastifyRequest): boolean {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  const mode = request.headers['sec-fetch-mode'];
+  if (mode && mode !== 'navigate') return false;
+  if (!acceptsHtml(request.headers.accept)) return false;
+  let segments: string[];
   try {
-    const target = request.url;
-    pathname = decodeURIComponent(target.startsWith('/') ? target.slice(0, target.search(/\?|$/)) : new URL(target).pathname);
+    segments = pathSegments(request.url);
   } catch {
     return false;
   }
-  const segments = pathname.split('/').filter(Boolean);
   const firstSegment = (segments[0] ?? '').toLowerCase();
   return !['api', 'auth', 'healthz', 'assets'].includes(firstSegment) &&
     !segments.some((segment) => segment.includes('.'));
