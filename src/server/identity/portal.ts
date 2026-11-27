@@ -3,16 +3,19 @@ import { createHmac } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { join } from 'node:path';
 import type SQLite from 'better-sqlite3';
-import type { PortalOptions } from '../http/portal-modules.js';
+import type { PortalOptions, Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 import { openCredentialVault } from './credentials.js';
 import { parseIdentityConfig } from './github-hosts.js';
 import { createIdentity } from './module.js';
 import { createOAuthTransport } from './oauth.js';
 import { createRepositoryProvider } from '../repositories/adapters.js';
+import type { RepositoryAccess } from '../repositories/provider.js';
 import { createRepositoryService } from '../repositories/sync.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
+
+const workerIntervalMs = 500;
 
 export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: IdentityFiles, fetcher = fetch) {
   let setup: ReturnType<typeof parseIdentityConfig>;
@@ -37,24 +40,26 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
   };
   const transport = createOAuthTransport(request);
   const identity = createIdentity({ db, vault, ...setup, ...transport });
+
+  async function verifyConnection(connection: RepositoryAccess, requester: Requester) {
+    const host = connection.provider === 'github' ? connection.target.host : 'azure-devops';
+    const registration = setup.registry.registration(host, 'repository');
+    const tokens = await identity.readTokens(connection.grantId, requester);
+    const proof = await transport.verifyRepository(registration, connection.target, tokens.accessToken)
+      .catch((error: unknown) => {
+        if (error instanceof ApiFailure && error.code === 'NOT_FOUND') throw new ApiFailure('ACCESS_DENIED');
+        throw error;
+      });
+    if (proof.id !== connection.repositoryId || proof.host !== connection.target.host || proof.scope !== connection.scope) {
+      throw new ApiFailure('ACCESS_DENIED');
+    }
+  }
+
   const repositories = createRepositoryService({
     db, cursorKey,
     access: {
       resolve: identity.repositoryContext, readGrant: identity.readGrant, deny: identity.markConnectionDenied,
-      recordVerification: identity.markConnectionVerified,
-      async verify(connection, requester) {
-        const host = connection.provider === 'github' ? connection.target.host : 'azure-devops';
-        const registration = setup.registry.registration(host, 'repository');
-        const tokens = await identity.readTokens(connection.grantId, requester);
-        const proof = await transport.verifyRepository(registration, connection.target, tokens.accessToken)
-          .catch((error: unknown) => {
-            if (error instanceof ApiFailure && error.code === 'NOT_FOUND') throw new ApiFailure('ACCESS_DENIED');
-            throw error;
-          });
-        if (proof.id !== connection.repositoryId || proof.host !== connection.target.host || proof.scope !== connection.scope) {
-          throw new ApiFailure('ACCESS_DENIED');
-        }
-      },
+      recordVerification: identity.markConnectionVerified, verify: verifyConnection,
     },
     async provider(connection, requester) {
       const tokens = await identity.readTokens(connection.grantId, requester);
@@ -64,6 +69,10 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
   const worker = new AbortController();
+  const stop = () => {
+    clearInterval(timer);
+    worker.abort();
+  };
   const unavailable = () => { throw new ApiFailure('TEMPORARILY_UNAVAILABLE'); };
   const disabled = () => { throw new ApiFailure('CAPABILITY_UNAVAILABLE'); };
   const portal = {
@@ -98,15 +107,11 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
         running = workerSignal.run(worker.signal, () => repositories.runNextOperation(worker.signal))
           .then(() => undefined, () => { console.error('Repository Sync worker failed.'); })
           .finally(() => { running = undefined; });
-      }, 500).unref();
+      }, workerIntervalMs).unref();
     },
-    stop() {
-      clearInterval(timer);
-      worker.abort();
-    },
+    stop,
     async close() {
-      clearInterval(timer);
-      worker.abort();
+      stop();
       await running;
       cursorKey.fill(0);
       vault.close();
