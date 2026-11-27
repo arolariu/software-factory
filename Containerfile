@@ -15,6 +15,7 @@ ARG BUILD_REVISION=
 ARG BUILD_TIMESTAMP=
 ARG BUILD_RUN_URL=
 RUN --network=none npm run check && npm test && npm run build
+RUN rm dist/server/identity/copilot-access.js
 
 FROM npm-base AS prod-deps
 RUN --mount=type=secret,id=npm_config,required=true \

@@ -24,12 +24,15 @@
     "typebox": "1.4.7"
   },
   "devDependencies": {
+    "@github/copilot-sdk": "1.0.34",
     "@playwright/test": "1.65.1",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.2",
     "@vitest/browser-playwright": "5.1.1",
     "@vitest/coverage-v8": "5.1.1",
+    "dompurify": "3.4.18",
+    "marked": "18.2.1",
     "svelte": "5.58.0",
     "svelte-check": "4.7.8",
     "typescript": "6.0.3",

@@ -114,6 +114,23 @@ it('reports when public sign-in is not configured', async () => {
   await vi.waitFor(() => expect(root.textContent).toContain('Public GitHub sign-in is not configured'));
 });
 
+it('offers a useful recovery path after repository device approval fails', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+    if (path === '/api/setup/status') return json({ state: 'claimed', pairingAvailable: false, signInAvailable: true });
+    if (path === '/api/authorization/flows') return json({ flow: {
+      flowId: 'recovered', browserInstructions: { userCode: 'ABCD-EFGH' },
+    } });
+    if (path === '/api/authorization/flows/recovered') return json({ state: 'failed' });
+    if (path === '/api/me') return new Response(null, { status: 401 });
+    return json({ revision: null, builtAt: null, runUrl: null });
+  }));
+  const root = mountSetup();
+  await click(root, 'Check approval');
+  await vi.waitFor(() => expect(root.textContent).toContain('Check the GitHub App installation'));
+  expect(root.textContent).not.toContain('ABCD-EFGH');
+  expect(root.textContent).toContain('Cancel authorization');
+});
+
 it('resumes the paired browser flow after reloading without showing the pairing input again', async () => {
   vi.stubGlobal('fetch', vi.fn(async (path) => {
     if (path === '/api/setup/status') return json({ state: 'unclaimed', pairingAvailable: true, paired: true, signInAvailable: true });

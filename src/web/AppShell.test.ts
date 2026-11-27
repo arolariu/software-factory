@@ -4,11 +4,14 @@ import AppShell from './AppShell.svelte';
 
 let target: HTMLDivElement;
 let app: ReturnType<typeof mount> | undefined;
+let originalUrl: string;
 const revision = 'c'.repeat(40);
 const builtAt = '2026-11-26T22:00:00.000Z';
 const runUrl = 'https://github.com/arolariu/software-factory/actions/runs/13/attempts/2';
 
 beforeEach(() => {
+  originalUrl = location.href;
+  sessionStorage.removeItem('factory.last-workbench');
   target = document.createElement('div');
   document.body.append(target);
 });
@@ -17,13 +20,29 @@ afterEach(async () => {
   if (app) await unmount(app);
   app = undefined;
   vi.unstubAllGlobals();
+  history.replaceState(null, '', originalUrl);
+  sessionStorage.removeItem('factory.last-workbench');
   target.remove();
 });
 
 function show(response: Response) {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+  vi.stubGlobal('fetch', vi.fn(async (url) => url === '/api/build' ? response : new Response(null, { status: 401 })));
   app = mount(AppShell, { target });
 }
+
+it.each([
+  ['/active-sessions', 'Active Sessions', '/connections/github%3A123/pull-requests?state=active', '/connections/github%3A123/pull-requests?state=active'],
+  ['/statistics', 'Statistics', '/connections/github:123/pull-requests?state=closed', '/connections/github%3A123/pull-requests?state=closed'],
+  ['/statistics', 'Statistics', '/connections/github%2F123/pull-requests?state=closed', '/'],
+] as const)(
+  'routes %s to its report and validates the saved repository pane (%s, %s)', async (path, title, saved, href) => {
+    history.replaceState(null, '', path);
+    sessionStorage.setItem('factory.last-workbench', saved);
+    show(Response.json({ revision, builtAt, runUrl: null }));
+    await vi.waitFor(() => expect(target.querySelector('main h2')?.textContent).toBe(title));
+    expect(target.querySelector('header a')?.getAttribute('href')).toBe(href);
+  },
+);
 
 it('links the exact full revision and producing run for a stamped artifact', async () => {
   show(Response.json({ revision, builtAt, runUrl }));
@@ -44,8 +63,7 @@ it('renders local provenance as plain text instead of inventing links', async ()
 
 it('shows signed-out state and unavailable provenance when the artifact is unstamped', async () => {
   show(Response.json({ revision: null, builtAt: null, runUrl: null }));
-  await tick();
-  expect(target.textContent).toContain('Signed out');
+  await vi.waitFor(() => expect(target.textContent).toContain('Signed out'));
   expect(target.querySelector('footer')?.textContent).toContain('Build provenance unavailable');
   expect(target.querySelector('footer a')).toBeNull();
 });

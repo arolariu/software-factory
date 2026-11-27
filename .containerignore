@@ -14,6 +14,7 @@ src/shared/**
 !src/shared/api/
 src/shared/api/**
 !src/shared/api/schemas.ts
+!src/shared/api/opaque-id.ts
 !src/shared/api/management-schemas.ts
 !src/shared/api/schemas.test.ts
 !src/server/
@@ -65,6 +66,8 @@ src/server/identity/**
 !src/server/identity/credentials.ts
 !src/server/identity/device-flow.ts
 !src/server/identity/device-flow.test.ts
+!src/server/identity/copilot-access.ts
+!src/server/identity/copilot-access.test.ts
 !src/server/identity/credentials.test.ts
 !src/server/identity/github-hosts.ts
 !src/server/identity/github-hosts.test.ts
@@ -86,6 +89,16 @@ src/web/**
 !src/web/main.ts
 !src/web/main.test.ts
 !src/web/AppShell.svelte
+!src/web/portal.css
+!src/web/Workbench.svelte
+!src/web/Workbench.test.ts
+!src/web/portal-read.ts
+!src/web/ActiveSessions.svelte
+!src/web/ActiveSessions.test.ts
+!src/web/Statistics.svelte
+!src/web/Statistics.test.ts
+!src/web/ReportFrame.svelte
+!src/web/report-read.svelte.ts
 !src/web/settings/
 src/web/settings/**
 !src/web/settings/Management.svelte

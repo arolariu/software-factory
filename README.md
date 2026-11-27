@@ -1,6 +1,6 @@
 # Software Factory
 
-A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) from one Linux container. Repository reads and explicit Sync are available through the API once delegated identity is configured. The browser is not wired to these flows yet, and task execution remains disabled.
+A light, desktop-first portal for repository triage and Copilot task tracking. The Svelte workbench and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) run in one Linux container. After signing in and connecting a repository, open the home page, choose the repository, and select **Sync** to load issues and pull requests. Task execution and repository writes remain disabled.
 
 ## Run locally
 
@@ -42,6 +42,14 @@ The configuration has `publicOrigin`, a `github` array, and an optional `azureDe
 `POST /api/connections/{id}/sync` queues read-only work and returns a `Location` receipt. Sync publishes a snapshot only after its entire source succeeds; a partial fetch never replaces existing rows. Reads page indexed SQLite rows and do not contact providers. Each source needs its own successful Sync within the 15-minute access window; reading Git data does not extend cached Azure Boards access. Restart retries interrupted read-only work only while its connection generation still matches.
 
 Upstream scans are bounded to 20 pages per source. If a source exceeds the bound, it stays unavailable or retains its last complete authorized snapshot rather than publishing truncated data. Azure Boards work items are project scoped. GitHub CI uses the listed head revision; Azure DevOps CI and Copilot session discovery are reported as unavailable in this milestone. Provider behavior has been tested with offline fixtures, not a live tenant. Azure DevOps needs delegated Boards and Git read access.
+
+## Check Copilot access
+
+On a development host with dev dependencies installed, run `npm run build`, then run `bash scripts/check-copilot-access.sh` in an interactive terminal with `FACTORY_GITHUB_CLIENT_ID` set to the public Client ID of your device-flow-enabled GitHub App. Approve the new device code with the account you want to verify. The check uses only that freshly authorized token and calls the SDK's authentication and model discovery methods in a temporary runtime directory. It does not use existing CLI credentials, store the token, start a task, or send a prompt.
+
+The result reports SDK authentication, model count, and models disabled by policy, not a personal plan name. A failed check or an empty model list does not prove an account has no Copilot subscription. [Organization seat details](https://docs.github.com/en/rest/copilot/copilot-user-management) are admin-only and not queried by Factory. The diagnostic is not available in the production image.
+
+The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 
 ## Test coverage
 
