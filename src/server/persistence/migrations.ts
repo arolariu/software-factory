@@ -19,7 +19,7 @@ const requiredTables = [
   'portal_sessions', 'oauth_intents', 'delegated_grants', 'connection_access', 'copilot_defaults', 'legacy_portal_claims',
   'repository_sources', 'repository_rows', 'repository_sync',
   'management_owner', 'management_pairing', 'management_claims', 'management_pair_attempts',
-  'management_flows',
+  'management_flows', 'management_flow_admission', 'management_settings', 'management_audit',
 ];
 const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item', 'repository_sync_in_flight'];
 

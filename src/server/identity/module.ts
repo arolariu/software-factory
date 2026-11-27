@@ -393,6 +393,22 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     readTokens,
     selectAuthorization,
     persistAuthorization,
+    recordRepositoryDenial(requester: Requester, intent: Intent, subject: string): void {
+      if (!intent.connection) return;
+      const original = getConnection(intent.connection.id, requester.id);
+      if (original?.subject === subject) markConnectionDenied(original.id, requester, intent.connection.generation);
+    },
+    disconnectRepository(connectionId: string, requester: Requester): void {
+      db.transaction(() => {
+        const original = getConnection(connectionId, requester.id);
+        if (!original) throw new ApiFailure('NOT_FOUND');
+        markConnectionDenied(connectionId, requester, original.generation);
+        db.prepare('UPDATE repo_connections SET generation=generation+1 WHERE id=? AND user_id=?')
+          .run(connectionId, requester.id);
+        db.prepare('UPDATE connection_access SET access_verified_at=NULL WHERE connection_id=? AND user_id=?')
+          .run(connectionId, requester.id);
+      }).immediate();
+    },
     repositoryContext(connectionId: string, requester: Requester): RepositoryAccess | undefined {
       const row = getConnection(connectionId, requester.id);
       if (!row?.grant_id) return undefined;

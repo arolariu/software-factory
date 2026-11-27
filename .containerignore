@@ -44,6 +44,7 @@ src/server/management/**
 !src/server/management/vault-key.ts
 !src/server/management/runtime.ts
 !src/server/management/authorization.ts
+!src/server/management/settings.ts
 !src/server/management/operator.ts
 !src/server/repositories/
 src/server/repositories/**
@@ -76,6 +77,10 @@ src/web/**
 !src/web/main.ts
 !src/web/main.test.ts
 !src/web/AppShell.svelte
+!src/web/settings/
+src/web/settings/**
+!src/web/settings/Management.svelte
+!src/web/settings/Management.test.ts
 !src/web/AppShell.test.ts
 !src/web/AppShell.e2e.test.ts
 !scripts/

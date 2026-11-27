@@ -22,6 +22,7 @@ const problems = {
   SETUP_ALREADY_CLAIMED: [409, 'Factory setup is already complete'],
   AUTH_FLOW_ACTIVE: [409, 'An authorization flow is already active'],
   AUTH_FLOW_NOT_READY: [409, 'Authorization cannot be completed'],
+  SETTINGS_CHANGED: [409, 'Instance settings have changed'],
   INTERNAL_ERROR: [500, 'Internal server error'],
   PROVIDER_ERROR: [502, 'Provider request failed'],
   ACCESS_UNVERIFIED: [503, 'Access could not be verified'],

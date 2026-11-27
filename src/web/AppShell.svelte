@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import Management from './settings/Management.svelte';
 
   let build: { revision: string | null; builtAt: string | null; runUrl: string | null } | null = $state(null);
+  const management = location.pathname === '/setup' || location.pathname === '/settings/factory';
 
   onMount(() => {
     const controller = new AbortController();
@@ -14,14 +16,19 @@
 
 <header>
   <span>Software Factory</span>
-  <span>Signed out</span>
+  <a href="/setup">Setup and settings</a>
 </header>
 <main>
   <h1>Software Factory</h1>
+  {#if management}
+    <Management />
+  {:else}
   <section aria-labelledby="repository-heading">
+    <span>Signed out</span>
     <h2 id="repository-heading">Repositories</h2>
     <p>Repository access is not configured in this build.</p>
   </section>
+  {/if}
 </main>
 <footer>
   {#if build?.revision && build.runUrl}

@@ -3,6 +3,7 @@ import Type, { type Static } from 'typebox';
 export const SetupStatus = Type.Object({
   state: Type.Enum(['unclaimed', 'claimed']),
   pairingAvailable: Type.Boolean(),
+  paired: Type.Boolean(),
   signInAvailable: Type.Boolean(),
 }, { additionalProperties: false });
 export type SetupStatus = Static<typeof SetupStatus>;
@@ -22,7 +23,17 @@ export const FlowStart = Type.Object({
     userCode: Type.String({ pattern: '^[A-Z0-9-]{4,32}$' }),
   }, { additionalProperties: false }),
 }, { additionalProperties: false });
+export const ActiveFlow = Type.Object({ flow: Type.Union([FlowStart, Type.Null()]) }, { additionalProperties: false });
 export const FlowStatus = Type.Object({
   state: Type.Enum(['pending', 'ready', 'complete', 'cancelled', 'expired', 'failed']),
 }, { additionalProperties: false });
 export type FlowStatus = Static<typeof FlowStatus>;
+
+const version = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+export const InstanceSettings = Type.Object({
+  version, repositoryEnabled: Type.Boolean(), repositoryConfigured: Type.Boolean(),
+  portalClientId: Type.String(), repositoryClientId: Type.Union([Type.String(), Type.Null()]),
+}, { additionalProperties: false });
+export type InstanceSettings = Static<typeof InstanceSettings>;
+export const UpdateInstanceSettings = Type.Object({ version, repositoryEnabled: Type.Boolean() }, { additionalProperties: false });
+export type UpdateInstanceSettings = Static<typeof UpdateInstanceSettings>;

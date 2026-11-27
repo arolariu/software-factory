@@ -7,6 +7,7 @@ import { createRegistry } from '../identity/github-hosts.js';
 import { createConfiguredPortal } from '../identity/portal.js';
 import { createGitHubDeviceFlow } from '../identity/device-flow.js';
 import { createAuthorizationService } from './authorization.js';
+import { createManagementSettings } from './settings.js';
 import { createSetupStore } from './setup.js';
 import { loadOrInitializeVaultKey } from './vault-key.js';
 
@@ -48,15 +49,22 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
     }] : []);
     const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const vault = openCredentialVault(vaultPath, key);
-    const configured = options.githubPortalClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetcher) : undefined;
-    const authorization = configured && createAuthorizationService({
-      db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetcher),
+    const lifecycle = new AbortController();
+    const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {
+      ...options, signal: AbortSignal.any([lifecycle.signal, ...(options?.signal ? [options.signal] : [])]),
     });
+    const configured = options.githubPortalClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen) : undefined;
+    const settings = options.githubPortalClientId && createManagementSettings(db, options.githubPortalClientId, options.githubRepositoryClientId);
+    const authorization = configured && settings ? createAuthorizationService({
+      db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetchWhileOpen),
+      repositoryAllowed: settings.repositoryAllowed,
+    }) : undefined;
     let timer: ReturnType<typeof setInterval> | undefined;
     let pending: Promise<void> | undefined;
-    const stop = () => { clearInterval(timer); configured?.stop(); };
+    const stop = () => { clearInterval(timer); lifecycle.abort(); configured?.stop(); };
     return {
-      origin, setup, authorization, portal: configured?.portal,
+      origin, setup, authorization, portal: configured?.portal, settings: settings || undefined,
+      disconnectRepository: configured?.identity.disconnectRepository,
       start() {
         configured?.start();
         if (authorization) timer = setInterval(() => {

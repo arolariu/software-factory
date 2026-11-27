@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -46,11 +46,35 @@ it('keeps the generated vault key across restart and refuses to replace a missin
     const first = loadOrInitializeVaultKey(path, false);
     expect(first).toHaveLength(32);
     expect(loadOrInitializeVaultKey(path, true)).toEqual(first);
+    if (process.platform !== 'win32') {
+      chmodSync(path, 0o644);
+      expect(() => loadOrInitializeVaultKey(path, true)).toThrow('not a private file');
+      chmodSync(path, 0o600);
+    }
     writeFileSync(path, 'short');
     expect(() => loadOrInitializeVaultKey(path, true)).toThrow('Credential encryption key');
     rmSync(path);
     expect(() => loadOrInitializeVaultKey(path, true)).toThrow('Credential encryption key');
   } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+it('rate limits unsuccessful pairing across browser sessions and resets the window', () => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-pair-limit-'));
+  const db = openDatabase(join(root, 'db.sqlite'));
+  try {
+    migrate(db);
+    let now = 0;
+    const setup = createSetupStore(db, () => now);
+    const active = setup.issueCode();
+    for (let i = 0; i < 20; i++) expect(() => setup.pair(`${i}`, 'invalid')).toThrow('SETUP_CODE_INVALID');
+    expect(() => setup.pair('bound', active.code)).toThrow('RATE_LIMITED');
+    now = 60_000;
+    setup.pair('bound', active.code);
+    expect(setup.hasClaim('bound')).toBe(true);
+  } finally {
+    db.close();
     rmSync(root, { recursive: true });
   }
 });

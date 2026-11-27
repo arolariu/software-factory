@@ -19,6 +19,16 @@ Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api
 
 ### Configure delegated identity
 
+#### Interactive hosted setup (preview)
+
+Set `FACTORY_MANAGEMENT_MODE=1` and `FACTORY_PUBLIC_ORIGIN` to the instance's canonical HTTPS origin behind trusted ingress. Start with a fresh private `/data` directory and leave `FACTORY_IDENTITY_CONFIG_FILE` unset. Factory generates and retains its vault key in `/data/management-vault.key`. Protect that file separately from the stopped database backup pair; an existing vault cannot be opened without its matching key.
+
+Configure the public client IDs of two distinct GitHub App registrations with device flow enabled using `FACTORY_GITHUB_PORTAL_CLIENT_ID` and `FACTORY_GITHUB_REPOSITORY_CLIENT_ID`. Client IDs are not secrets. From a trusted interactive host terminal, run `podman exec -it <container> node dist/server/main.js setup-code`. Enter the resulting ten-minute code at `/setup`, then complete GitHub approval in the external browser. No pre-created account, OAuth client secret, or access token is needed. The repository app still needs an approved installation and read permissions.
+
+Setup is owner-only. The preview UI can toggle new repository authorization and connect, reconnect, or disconnect a repository locally. Disconnect does not revoke upstream authorization. Custom app replacement, Windows/Tauri packaging and signing, and provider staging verification are not part of this preview. Legacy configured deployments use the mode below; populated legacy data cannot be claimed in preview mode.
+
+#### Legacy file-configured mode
+
 Leave `FACTORY_IDENTITY_CONFIG_FILE` unset for the sign-in-disabled foundation. To enable the identity API, use a canonical HTTPS public origin and mount a private JSON configuration and a separate raw 32-byte encryption key. Set `FACTORY_IDENTITY_CONFIG_FILE` to the JSON file's mounted path and `FACTORY_CREDENTIAL_KEY_FILE` to the key path (defaults to `/run/secrets/identity-key`). Do not put either file in the build context or commit it.
 
 Stop the application before backing up `factory.sqlite` and `credentials.sqlite` as one consistent pair. Credential rotation crosses both databases, so two independent online snapshots can produce a grant that points to a missing vault entry. Restore both files from the same stopped backup before starting the application, and escrow the matching key separately.

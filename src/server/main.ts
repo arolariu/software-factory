@@ -7,6 +7,7 @@ import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
 import { openManagementRuntime, type ManagementOptions } from './management/runtime.js';
 import { issueOperatorCode } from './management/operator.js';
+import { createSetupStore } from './management/setup.js';
 
 interface StartupOptions {
   dataDir: string;
@@ -49,6 +50,7 @@ export async function startServer(options: StartupOptions) {
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
     if (options.management && options.identity) throw new Error('Configure either management mode or legacy identity, not both.');
+    if (options.identity && createSetupStore(db).owner()) throw new Error('A claimed management instance cannot use legacy identity.');
     if (options.management) management = openManagementRuntime(db, dataDir, options.management);
     if (options.identity) auth = openIdentityPortal(db, dataDir, options.identity);
     const portal = auth?.portal ?? management?.portal;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { runCli, startServer, verifyContainerData } from './main.js';
 import { openDatabase } from './persistence/open.js';
+import { createSetupStore } from './management/setup.js';
 
 let root: string;
 let dataDir: string;
@@ -149,4 +150,47 @@ it('loads the mounted identity config at startup and publishes only configured h
   }
   writeFileSync(configFile, '{"secret":"not-to-log"');
   await expect(startServer(serverOptions)).rejects.toThrow('Identity configuration is missing or invalid.');
+});
+
+it('starts management mode without credentials and rejects legacy mode after ownership is claimed', async () => {
+  const managed = { publicOrigin: 'https://factory.example' };
+  const legacy = { configFile: 'unread', keyFile: 'unread' };
+  await expect(startServer({ dataDir, artifactDir, port: 0, identity: legacy, management: managed }))
+    .rejects.toThrow('not both');
+  const server = await startServer({ dataDir, artifactDir, port: 0, management: managed });
+  try {
+    const status = await fetch(`${server.address}/api/setup/status`);
+    expect(await status.json()).toEqual({ state: 'unclaimed', pairingAvailable: true, paired: false, signInAvailable: false });
+  } finally {
+    await server.close();
+  }
+  const db = openDatabase(join(dataDir, 'factory.sqlite'));
+  try {
+    const setup = createSetupStore(db);
+    setup.pair('session', setup.issueCode().code);
+    setup.claimOwner('session', { provider: 'github', host: 'github.com', subject: '42', registrationId: 'fixture' });
+  } finally {
+    db.close();
+  }
+  await expect(startServer({ dataDir, artifactDir, port: 0, identity: legacy })).rejects.toThrow('claimed management instance');
+});
+
+it('does not issue a setup code outside management mode or without an interactive terminal', async () => {
+  const previous = process.exitCode;
+  const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const args = ['node', 'factory', 'setup-code'];
+  try {
+    await runCli({ FACTORY_DATA_DIR: dataDir }, args, artifactDir);
+    expect(report.mock.calls.at(-1)?.[1]).toMatchObject({ message: 'Setup code issuance requires management mode.' });
+    await runCli({ FACTORY_DATA_DIR: dataDir, FACTORY_MANAGEMENT_MODE: '1', FACTORY_IDENTITY_CONFIG_FILE: 'legacy' }, args, artifactDir);
+    expect(report.mock.calls.at(-1)?.[1]).toMatchObject({ message: 'Setup code issuance requires management mode.' });
+    await runCli({
+      FACTORY_DATA_DIR: dataDir, FACTORY_MANAGEMENT_MODE: '1', FACTORY_PUBLIC_ORIGIN: 'http://factory.example',
+      FACTORY_GITHUB_PORTAL_CLIENT_ID: 'portal', FACTORY_GITHUB_REPOSITORY_CLIENT_ID: 'repo',
+    }, [], artifactDir);
+    expect(report.mock.calls.at(-1)?.[1]).toMatchObject({ message: 'Management mode requires a canonical HTTPS public origin.' });
+  } finally {
+    process.exitCode = previous;
+    report.mockRestore();
+  }
 });

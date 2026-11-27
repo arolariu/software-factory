@@ -12,3 +12,22 @@ CREATE TABLE management_flows (
 CREATE UNIQUE INDEX management_one_active_flow
   ON management_flows (session_hash) WHERE state IN ('pending','ready');
 CREATE INDEX management_poll_queue ON management_flows (state,next_poll);
+
+CREATE TABLE management_flow_admission (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  window INTEGER NOT NULL,
+  attempts INTEGER NOT NULL
+);
+
+CREATE TABLE management_settings (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  version INTEGER NOT NULL,
+  repository_enabled INTEGER NOT NULL CHECK (repository_enabled IN (0,1))
+);
+
+CREATE TABLE management_audit (
+  id INTEGER PRIMARY KEY,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL
+);
