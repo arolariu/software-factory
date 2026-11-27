@@ -210,7 +210,13 @@
                 {#if catalog.data.models?.length}
                   <ul>
                     {#each catalog.data.models as model}
-                      <li><strong>{model.name}</strong> <span class="chip">{model.policy}</span> <span class="muted">{model.reasoning.join(', ')}</span></li>
+                      <li>
+                        <strong>{model.name}</strong> <span class="chip">{model.policy}</span> <span class="muted">{model.reasoning.join(', ')}</span>
+                        {#if model.tokenPricing}
+                          {@const price = model.tokenPricing}
+                          <span class="muted">{`Input ${price.inputPrice ?? 'not reported'}, output ${price.outputPrice ?? 'not reported'} ${price.unit === 'ai_credits' ? 'AI credits' : 'nano-AI units'} per ${price.batchSize} tokens`}</span>
+                        {/if}
+                      </li>
                     {/each}
                   </ul>
                 {:else}

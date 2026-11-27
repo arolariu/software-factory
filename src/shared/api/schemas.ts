@@ -110,6 +110,10 @@ export const ApiSchemas = {
     models: nullable(Type.Array(object({
       id: nonempty, name: nonempty, policy: names('enabled', 'disabled', 'unconfigured', 'unknown'),
       reasoning: Type.Array(nonempty), defaultReasoning: nullable(nonempty),
+      tokenPricing: Type.Optional(object({
+        unit: names('ai_credits', 'nano_aiu'), batchSize: Type.Integer({ minimum: 1 }),
+        inputPrice: nullable(credits), outputPrice: nullable(credits),
+      })),
     }))),
     quota: nullable(Type.Array(object({
       kind: names('chat', 'completions', 'premium_interactions'), unit: Type.Literal('requests'),
@@ -159,6 +163,7 @@ export const ApiSchemas = {
   unlinkedSessions: availablePage(object({ id, runtimeKind: runtime, title: nullable(text), url: nullable(url) })),
   task: object({
     task, sessionState: nullable(sessionState), observedAt: nullable(at),
+    sdkUsage: Type.Optional(object({ observedAt: at, nanoAiu: nullable(count), premiumRequests: nullable(credits) })),
     pendingQuestion: nullable(object({ id, text })),
     actions: object({ context: availability, answer: availability, archive: availability }),
     draftPrUrl: nullable(url),

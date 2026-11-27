@@ -9,7 +9,10 @@ import { createSdk, withCopilotRuntime } from './copilot-runtime.js';
 export interface CatalogReader {
   getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string }>;
   listModels(): Promise<unknown>;
-  rpc: { account: { getQuota(input: Record<never, never>): Promise<unknown> } };
+  rpc: {
+    account: { getQuota(input: Record<never, never>): Promise<unknown> };
+    models?: { listTokenPriceUnits(): Promise<unknown> };
+  };
 }
 
 const label = Type.String({ minLength: 1, maxLength: 256 });
@@ -19,7 +22,18 @@ const catalogModels = Type.Array(Type.Object({
   policy: Type.Optional(Type.Object({ state: Type.String() })),
   supportedReasoningEfforts: Type.Optional(Type.Array(label, { maxItems: 32 })),
   defaultReasoningEffort: Type.Optional(label),
+  billing: Type.Optional(Type.Unknown()),
 }), { maxItems: 512 });
+const price = Type.Number({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+const tokenPrices = Type.Object({
+  batchSize: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+  inputPrice: Type.Optional(price),
+  outputPrice: Type.Optional(price),
+});
+const billing = Type.Object({ tokenPrices });
+const priceUnits = Type.Object({
+  units: Type.Array(Type.Object({ modelId: label, unit: Type.String() }), { maxItems: 512 }),
+});
 const quotaResult = Type.Object({ quotaSnapshots: Type.Record(Type.String(), Type.Unknown()) });
 const quotaItem = Type.Object({
   isUnlimitedEntitlement: Type.Boolean(),
@@ -29,15 +43,30 @@ const quotaItem = Type.Object({
 });
 const quotaKinds = ['chat', 'completions', 'premium_interactions'] as const;
 
-function modelsView(raw: unknown): ApiDto<'copilotCatalog'>['models'] {
+async function modelsView(raw: unknown, modelsRpc: CatalogReader['rpc']['models']): Promise<ApiDto<'copilotCatalog'>['models']> {
   if (!Value.Check(catalogModels, raw)) return null;
-  return raw.map((model) => {
+  const parsed = raw.map((model) => ({ model, prices: Value.Check(billing, model.billing) ? model.billing.tokenPrices : null }));
+  const units = new Map<string, 'ai_credits' | 'nano_aiu' | null>();
+  if (modelsRpc && parsed.some(({ prices }) => prices !== null)) {
+    const rawUnits = await modelsRpc.listTokenPriceUnits().catch(() => null);
+    if (Value.Check(priceUnits, rawUnits)) {
+      for (const { modelId, unit } of rawUnits.units) {
+        units.set(modelId, !units.has(modelId) && (unit === 'ai_credits' || unit === 'nano_aiu') ? unit : null);
+      }
+    }
+  }
+  return parsed.map(({ model, prices }) => {
     const policy = model.policy?.state;
     const reasoning = model.supportedReasoningEfforts ?? [];
+    const unit = units.get(model.id);
+    const tokenPricing = unit && prices && (prices.inputPrice !== undefined || prices.outputPrice !== undefined) ? {
+      unit, batchSize: prices.batchSize, inputPrice: prices.inputPrice ?? null, outputPrice: prices.outputPrice ?? null,
+    } : undefined;
     return {
       id: model.id, name: model.name, reasoning,
       policy: policy === 'enabled' || policy === 'disabled' || policy === 'unconfigured' ? policy : 'unknown',
       defaultReasoning: reasoning.find((effort) => effort === model.defaultReasoningEffort) ?? null,
+      ...(tokenPricing && { tokenPricing }),
     };
   });
 }
@@ -63,9 +92,11 @@ function quotaView(raw: unknown): ApiDto<'copilotCatalog'>['quota'] {
 export async function inspectCatalog(client: CatalogReader): Promise<ApiDto<'copilotCatalog'>> {
   const status = await client.getAuthStatus();
   if (!status.isAuthenticated || status.authType !== 'token') throw new ApiFailure('COPILOT_REAUTH_REQUIRED');
-  const [models, quota] = await Promise.allSettled([client.listModels(), client.rpc.account.getQuota({})]);
+  const [models, quota] = await Promise.allSettled([
+    client.listModels().then((raw) => modelsView(raw, client.rpc.models)), client.rpc.account.getQuota({}),
+  ]);
   return {
-    models: models.status === 'fulfilled' ? modelsView(models.value) : null,
+    models: models.status === 'fulfilled' ? models.value : null,
     quota: quota.status === 'fulfilled' ? quotaView(quota.value) : null,
   };
 }

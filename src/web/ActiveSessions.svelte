@@ -112,6 +112,14 @@
                   {#if detail}
                     <p>{`Task state: ${detail.task.state}`}</p>
                     {#if detail.pendingQuestion}<p>{detail.pendingQuestion.text}</p>{/if}
+                    {#if detail.sdkUsage}
+                      <p>
+                        Last usage sample:
+                        {detail.sdkUsage.nanoAiu === null ? 'AI units not measured' : `${detail.sdkUsage.nanoAiu} nano-AI units`};
+                        {detail.sdkUsage.premiumRequests === null ? 'premium requests not measured' : `${detail.sdkUsage.premiumRequests} premium requests`}.
+                        <time datetime={detail.sdkUsage.observedAt}>{detail.sdkUsage.observedAt}</time>
+                      </p>
+                    {/if}
                   {:else}
                     <p role="status">{detailNote || 'Loading task details...'}</p>
                   {/if}

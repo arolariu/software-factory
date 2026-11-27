@@ -4,6 +4,7 @@ import Value from 'typebox/value';
 import { ApiSchemas } from '../../shared/api/schemas.js';
 import { migrate } from './migrations.js';
 import { createTaskReads } from './task-reads.js';
+import { createTaskUsage } from './task-usage.js';
 
 const requester = { id: 'alice' };
 const observationAt = 20;
@@ -105,6 +106,46 @@ it('uses terminal timestamps and preserves unknown usage instead of counting it 
     expect(reads.statistics(requester)).toMatchObject({ credits: { measured: 4 }, weekly: [{ credits: null }] });
     db.exec("UPDATE task_observations SET credits=NULL WHERE task_id='done'");
     expect(reads.statistics(requester)).toMatchObject({ credits: { measured: null }, weekly: [{ credits: null }] });
+  } finally { db.close(); }
+});
+
+it('projects exact SDK usage separately from legacy credit totals, only for the current requester and session', () => {
+  const { db, grants, reads } = fixture();
+  try {
+    db.exec("INSERT INTO task_starts VALUES ('ask','hash',1,'account')");
+    const meter = createTaskUsage(db, (connectionId) => grants.get(connectionId) ?? 'denied');
+    expect(meter.target({ id: 'bob' }, 'ask')).toBeUndefined();
+    expect(meter.target(requester, 'queued')).toBeUndefined();
+    const captured = meter.target(requester, 'ask');
+    if (!captured) throw new Error('Expected a verified usage target');
+    expect(meter.record(captured, { totalPremiumRequestCost: 1.25, totalNanoAiu: 0, aiCreditsStatus: 'unavailable' }, 10)).toBe(true);
+    expect(meter.record(captured, { modelMetrics: {} }, 11)).toBe(false);
+    expect(reads.task(requester, 'ask').sdkUsage).toEqual({
+      observedAt: '1970-01-01T00:00:00.010Z', nanoAiu: null, premiumRequests: 1.25,
+    });
+    const total = { totalNanoAiu: 33, aiCreditsStatus: 'complete' };
+    for (const mismatch of [{ sessionId: 'other' }, { requesterId: 'bob' }, { connectionId: 'alice-h' },
+      { scope: 'different-host' }, { copilotAccountId: 'different-account' }, { generation: 2 }]) {
+      expect(meter.record({ ...captured, ...mismatch }, total, 12)).toBe(false);
+    }
+    expect(meter.record(captured, null, 12)).toBe(false);
+    expect(meter.record(captured, total, -1)).toBe(false);
+    expect(meter.record(captured, { ...total, totalNanoAiu: 9007199254740992 }, 12)).toBe(false);
+    expect(meter.record(captured, { ...total, aiCreditsStatus: 'partial' }, 12)).toBe(false);
+    expect(meter.record(captured, { ...total, totalNanoAiu: 0 }, 12)).toBe(true);
+    expect(meter.record(captured, total, 11)).toBe(false);
+    const measured = reads.task(requester, 'ask');
+    expect(Value.Check(ApiSchemas.task, measured)).toBe(true);
+    expect(measured.sdkUsage).toEqual({
+      observedAt: '1970-01-01T00:00:00.012Z', nanoAiu: 0, premiumRequests: null,
+    });
+    expect(reads.statistics(requester).credits.measured).toBe(4);
+    grants.set('alice-r', 'unverified');
+    expect(meter.record(captured, total, 13)).toBe(false);
+    grants.set('alice-r', 'valid');
+    db.exec("UPDATE repo_connections SET generation=2 WHERE id='alice-r'");
+    expect(meter.record(captured, total, 13)).toBe(false);
+    expect(reads.task(requester, 'ask').sdkUsage).toBeUndefined();
   } finally { db.close(); }
 });
 

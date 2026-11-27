@@ -63,7 +63,13 @@ it('links Copilot separately and shows models and account quota in their reporte
       if (samples === 2) return json({ models: null, quota: [] });
       if (samples === 3) return json({ models: [], quota: null });
       return json({
-        models: [{ id: 'a', name: 'Model Alpha', policy: 'disabled', reasoning: ['low', 'high'], defaultReasoning: 'high' }],
+        models: [{
+          id: 'a', name: 'Model Alpha', policy: 'disabled', reasoning: ['low', 'high'], defaultReasoning: 'high',
+          tokenPricing: { unit: 'ai_credits', batchSize: 1_000, inputPrice: 3, outputPrice: 0 },
+        }, {
+          id: 'b', name: 'Model Beta', policy: 'enabled', reasoning: [], defaultReasoning: null,
+          tokenPricing: { unit: 'nano_aiu', batchSize: 100, inputPrice: null, outputPrice: 12 },
+        }],
         quota: [
           { kind: 'premium_interactions', unit: 'requests', used: 12, limit: 100, unlimited: false, resetsAt: null },
           { kind: 'chat', unit: 'requests', used: 0, limit: null, unlimited: true, resetsAt: '2026-12-01T00:00:00.000Z' },
@@ -82,6 +88,8 @@ it('links Copilot separately and shows models and account quota in their reporte
     expect(root.textContent).toContain('12 / 100 requests used');
     expect(root.textContent).toContain('disabled');
     expect(root.textContent).toContain('low, high');
+    expect(root.textContent).toContain('Input 3, output 0 AI credits per 1000 tokens');
+    expect(root.textContent).toContain('Input not reported, output 12 nano-AI units per 100 tokens');
     expect(root.textContent).toContain('Reconnect Copilot for former');
     expect(root.textContent).toContain('Unlimited');
     expect(root.querySelector('time')?.dateTime).toBe('2026-12-01T00:00:00.000Z');

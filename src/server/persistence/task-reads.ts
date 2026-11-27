@@ -84,6 +84,13 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       AND (o.session_state IS NULL OR o.session_state NOT IN ('completed','stopped','failed'))
     ORDER BY t.created_at DESC,t.id ASC`);
   const byId = db.prepare<[string, string], Row>(`${projection} WHERE t.requester_id=? AND t.id=?`);
+  const usageForTask = db.prepare<[string], { observed_at: number; nano_aiu: number | null; premium_requests: number | null }>(`
+    SELECT u.observed_at,u.nano_aiu,u.premium_requests FROM task_sdk_usage u
+    JOIN tasks t ON t.id=u.task_id JOIN repo_connections c ON c.id=t.connection_id JOIN task_starts s ON s.task_id=t.id
+    WHERE u.task_id=? AND u.session_id=t.sdk_session_id AND u.runtime_scope=t.runtime_scope
+      AND u.copilot_account_id=s.copilot_account_id AND u.connection_generation=s.connection_generation
+      AND u.connection_generation=c.generation
+  `);
   const byConnection = db.prepare<[string, string], Row>(`
     ${projection} WHERE t.requester_id=? AND t.connection_id=? AND t.state NOT IN ('completed','stopped','failed')
     ORDER BY t.created_at DESC,t.id ASC
@@ -135,6 +142,7 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       requireConnection(requester, row.connection_id);
       const observed = currentObservation(row, now());
       const nonterminal = active(row.state) && (row.session_state === null || active(row.session_state));
+      const sample = usageForTask.get(row.id);
       return {
         task: taskView(row),
         sessionState: row.sdk_session_id === null || !nonterminal ? null : observed ?? 'unverified',
@@ -143,6 +151,10 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
           ? { id: row.question_id, text: row.question_text } : null,
         actions: { answer: disabled, archive: disabled, context: disabled },
         draftPrUrl: row.draft_pr_url,
+        ...(sample && { sdkUsage: {
+          observedAt: new Date(sample.observed_at).toISOString(),
+          nanoAiu: sample.nano_aiu, premiumRequests: sample.premium_requests,
+        } }),
       };
     }),
     statistics: db.transaction((requester: Requester): Statistics => {

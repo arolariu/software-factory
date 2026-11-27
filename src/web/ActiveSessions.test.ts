@@ -52,7 +52,10 @@ it('does not present unavailable session data as an empty queue, and lets users 
 it('shows scoped attention and keeps last-good sessions only for transient failures', async () => {
   let calls = 0;
   browse('/active-sessions?repository=r1', (url) => {
-    if (url === '/api/tasks/a') return Response.json({ task: { state: 'waiting_input' }, pendingQuestion: { text: 'Which approach?' } });
+    if (url === '/api/tasks/a') return Response.json({
+      task: { state: 'waiting_input' }, pendingQuestion: { text: 'Which approach?' },
+      sdkUsage: { observedAt: '2026-11-28T00:00:00.000Z', nanoAiu: 0, premiumRequests: 1.25 },
+    });
     if (calls++ === 0) return Response.json({
       repositories: [{ id: 'r1', name: 'Factory', provider: 'github' }, { id: 'r2', name: 'Other', provider: 'azure_devops' }],
       sessions: [
@@ -69,7 +72,11 @@ it('shows scoped attention and keeps last-good sessions only for transient failu
   await press('Needs your answer 1');
   expect(target.textContent).not.toContain('Already running');
   await press('View task');
-  await vi.waitFor(() => expect(target.textContent).toContain('Which approach?'));
+  await vi.waitFor(() => {
+    expect(target.textContent).toContain('Which approach?');
+    expect(target.textContent).toContain('0 nano-AI units');
+    expect(target.textContent).toContain('1.25 premium requests');
+  });
   await press('View task');
   expect(target.textContent).not.toContain('Which approach?');
   await page.getByLabelText('Status').selectOptions('needs_recovery', { timeout: 1500 });

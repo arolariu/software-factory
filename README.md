@@ -53,6 +53,8 @@ The result reports SDK authentication, model count, and models disabled by polic
 
 On a hosted GitHub.com instance, `FACTORY_COPILOT_ACCESS=1` enables the opt-in Copilot section in Settings. Provide a writable temporary directory for the server user (normally `/tmp`); the SDK runs in an isolated temporary directory using the explicit Copilot grant, with no CLI-login or repository-grant fallback. Link Copilot through a separate device approval using the same GitHub App, then check the account's model catalog and quota. Account quota is reported as requests, not as an AI-credit balance. Missing quota, an unlimited allowance and a zero allowance are different states. The check never creates a session, sends a prompt or starts a cloud task.
 
+Model prices appear in the SDK-reported unit per token batch only if the catalog and its pricing-unit response agree on the model. Prices are rates, not charges. Active Sessions can display the latest verified sample for a mapped task (nano-AI units and premium request cost reported separately). The task usage store has no live sampler yet; incomplete SDK credit totals do not appear as zero or get added to aggregate credits.
+
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 
 ## Test coverage

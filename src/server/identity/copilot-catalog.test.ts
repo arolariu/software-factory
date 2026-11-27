@@ -70,6 +70,49 @@ it('never reads the catalog without SDK-confirmed token authentication', async (
   expect(listModels).not.toHaveBeenCalled();
 });
 
+it('shows only prices associated with an unambiguous SDK billing unit', async () => {
+  const prices = { inputPrice: 3, outputPrice: 0, batchSize: 1_000 };
+  const listTokenPriceUnits = vi.fn(async () => ({
+    units: [
+      { modelId: 'published', unit: 'ai_credits' },
+      { modelId: 'nano', unit: 'nano_aiu' },
+      { modelId: 'ambiguous', unit: 'ai_credits' },
+      { modelId: 'ambiguous', unit: 'nano_aiu' },
+      { modelId: 'unsupported', unit: 'unverified' },
+      { modelId: 'input', unit: 'ai_credits' },
+      { modelId: 'output', unit: 'ai_credits' },
+      { modelId: 'no-amount', unit: 'ai_credits' },
+    ],
+  }));
+  const client = {
+    getAuthStatus: authenticated,
+    listModels: async () => [
+      ...['published', 'nano', 'ambiguous', 'unsupported', 'missing'].map((id) => ({
+        id, name: id, billing: { tokenPrices: prices, irrelevant: 'raw-payload' },
+      })),
+      { id: 'input', name: 'input', billing: { tokenPrices: { batchSize: 10, inputPrice: 1 } } },
+      { id: 'output', name: 'output', billing: { tokenPrices: { batchSize: 10, outputPrice: 2 } } },
+      { id: 'no-amount', name: 'no-amount', billing: { tokenPrices: { batchSize: 10 } } },
+    ],
+    rpc: { account: { getQuota }, models: { listTokenPriceUnits } },
+  };
+  const catalog = await inspectCatalog(client);
+  expect(catalog.models?.map(({ tokenPricing }) => tokenPricing ?? null)).toEqual([
+    { unit: 'ai_credits', batchSize: 1_000, inputPrice: 3, outputPrice: 0 },
+    { unit: 'nano_aiu', batchSize: 1_000, inputPrice: 3, outputPrice: 0 },
+    null, null, null,
+    { unit: 'ai_credits', batchSize: 10, inputPrice: 1, outputPrice: null },
+    { unit: 'ai_credits', batchSize: 10, inputPrice: null, outputPrice: 2 },
+    null,
+  ]);
+  expect(listTokenPriceUnits).toHaveBeenCalledTimes(1);
+  listTokenPriceUnits.mockRejectedValueOnce(new Error('Unavailable'));
+  expect((await inspectCatalog(client)).models?.every((row) => row.tokenPricing === undefined)).toBe(true);
+  const withoutPrices = await inspectCatalog({ ...client, listModels: async () => [{ id: 'free', name: 'uncategorized' }] });
+  expect(withoutPrices.models?.[0]?.tokenPricing).toBeUndefined();
+  expect(listTokenPriceUnits).toHaveBeenCalledTimes(2);
+});
+
 it('coalesces requests for one credential, caps concurrency, and rejects data after credential rotation', async () => {
   const pending = Promise.withResolvers<{ models: null; quota: null }>();
   const tokenForAccount = vi.fn(async (id: string) => `${id}-v1`);
