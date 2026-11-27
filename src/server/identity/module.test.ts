@@ -9,7 +9,7 @@ import { ApiFailure } from '../http/problems.js';
 import { openCredentialVault } from './credentials.js';
 import { createIdentity } from './module.js';
 import { createRegistry } from './github-hosts.js';
-import type { VerifiedAuthorization } from './oauth.js';
+import { RepositoryAuthorizationDenied, type VerifiedAuthorization } from './oauth.js';
 
 const origin = 'https://factory.example';
 const reg = (id: string) => ({ id, clientId: id, secret: 'test-app-secret' });
@@ -280,4 +280,67 @@ it('rejects late callbacks and revoked sessions without stealing the original pr
   expect(identity.resolveRequester(signed.session)).toBeNull();
   expect(identity.copilotAccounts(signed.requester).items).toEqual([]);
   expect(() => identity.me({ id: 'unknown' })).toThrow('AUTH_REQUIRED');
+});
+
+it('reauthorizes the same Copilot account under a new registration, preserving its selected default', async () => {
+  const identity = service();
+  const signed = await signIn(identity);
+  await start(identity, signed, { intent: 'link_copilot', hostId: 'github.com' })();
+  const old = identity.copilotAccounts(signed.requester).items[0];
+  if (!old) throw new Error('Missing Copilot account');
+  identity.setDefaultCopilotAccount(signed.requester, old.id);
+  const replacement = service([{ ...github, registrations: { ...github.registrations, copilot: reg('replacement-copilot') } }]);
+  expect(replacement.copilotAccounts(signed.requester).items[0]?.state).toBe('needs_auth');
+  await start(replacement, signed, { intent: 'reconnect_copilot', copilotAccountId: old.id })();
+  const result = replacement.copilotAccounts(signed.requester);
+  expect(result.items).toHaveLength(1);
+  expect(result.items[0]?.state).toBe('connected');
+  expect(result.defaultAccountId).toBe(result.items[0]?.id);
+  await expect(replacement.readTokens(old.id, signed.requester)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+});
+
+it('invalidates a reconnect denial only for the verified bound account and generation', async () => {
+  const identity = service();
+  const signed = await signIn(identity);
+  redeem.mockResolvedValueOnce({ ...authorization, repo });
+  await start(identity, signed, { intent: 'connect', repositoryUrl: repo.url })();
+  const connection = identity.connections(signed.requester).items[0];
+  if (!connection) throw new Error('Missing connection');
+  const reconnect = { intent: 'reconnect', connectionId: connection.id } as const;
+  redeem.mockRejectedValueOnce(new RepositoryAuthorizationDenied('different'));
+  await expect(start(identity, signed, reconnect)()).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+  expect(identity.readGrant(connection.id, signed.requester)).toBe('valid');
+  redeem.mockRejectedValueOnce(new ApiFailure('PROVIDER_ERROR'));
+  await expect(start(identity, signed, reconnect)()).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+  expect(identity.readGrant(connection.id, signed.requester)).toBe('valid');
+  const replacement = service([{ ...github, registrations: { ...github.registrations, repository: reg('replacement-repo') } }]);
+  expect(replacement.connections(signed.requester).items[0]?.state).toBe('needs_auth');
+  expect(replacement.readGrant(connection.id, signed.requester)).toBe('denied');
+  redeem.mockRejectedValueOnce(new RepositoryAuthorizationDenied('42'));
+  await expect(start(identity, signed, reconnect)()).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+  expect(identity.readGrant(connection.id, signed.requester)).toBe('denied');
+});
+
+it('preserves v1 connection ownership after exact portal proof without adopting later delegated links', async () => {
+  const legacyDb = openDatabase(join(directory, 'legacy.sqlite'));
+  try {
+    migrate(legacyDb, [{ version: 1, sql: readFileSync(new URL('../persistence/001-foundation.sql', import.meta.url), 'utf8') }]);
+    legacyDb.exec(`
+      INSERT INTO users VALUES ('legacy-owner');
+      INSERT INTO identities VALUES ('legacy-identity','legacy-owner','github','github.com','42');
+      INSERT INTO repositories VALUES ('legacy-repo','github','github.com','org','101','https://github.com/org/repo');
+      INSERT INTO repo_connections (id,repo_id,user_id,identity_id,connected_at)
+        VALUES ('legacy-connection','legacy-repo','legacy-owner','legacy-identity',0);
+    `);
+    migrate(legacyDb);
+    const identity = createIdentity({ db: legacyDb, vault, origin, registry: createRegistry([github]), redeem, refresh, now: () => now });
+    const signed = await signIn(identity);
+    expect(signed.requester.id).toBe('legacy-owner');
+    expect(identity.connections(signed.requester).items[0]?.id).toBe('legacy-connection');
+    redeem.mockResolvedValueOnce({ ...authorization, repo });
+    await start(identity, signed, { intent: 'reconnect', connectionId: 'legacy-connection' })();
+    expect(identity.readGrant('legacy-connection', signed.requester)).toBe('valid');
+  } finally {
+    legacyDb.close();
+  }
 });

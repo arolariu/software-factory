@@ -5,7 +5,7 @@ import { ApiFailure } from '../http/problems.js';
 import type { AuthorizationProvider, PortalModules, Requester } from '../http/portal-modules.js';
 import type { CredentialVault, Tokens } from './credentials.js';
 import type { Purpose, Registration, Registry, RepoTarget } from './github-hosts.js';
-import { authorizationUrl, type createOAuthTransport, type VerifiedAuthorization, type VerifiedRepository } from './oauth.js';
+import { authorizationUrl, RepositoryAuthorizationDenied, type createOAuthTransport, type VerifiedAuthorization, type VerifiedRepository } from './oauth.js';
 
 const fifteenMinutes = 900_000;
 const sessionAge = 28_800_000;
@@ -17,7 +17,7 @@ const purposeOf = (intent: AuthorizationIntent): Purpose =>
 const destination = { portal: '/', copilot: '/settings/copilot', repository: '/settings/repository' } as const;
 const connectionQuery = `
   SELECT c.id, c.repo_id, c.identity_id, c.generation, r.canonical_host, r.provider,
-         r.provider_repo_id, r.provider_scope, r.canonical_url, r.name, i.display_name,
+         r.provider_repo_id, r.provider_scope, r.canonical_url, r.name, i.display_name, i.subject,
          a.grant_id, a.generation AS verified_generation, a.access_verified_at, a.denied_at
   FROM repo_connections c JOIN repositories r ON r.id = c.repo_id
   JOIN identities i ON i.id = c.identity_id LEFT JOIN connection_access a ON a.connection_id = c.id
@@ -25,7 +25,7 @@ const connectionQuery = `
 interface Connection {
   id: string; repo_id: string; identity_id: string; generation: number; canonical_host: string;
   provider: 'github' | 'azure_devops'; provider_repo_id: string; provider_scope: string;
-  canonical_url: string; name: string; display_name: string; grant_id: string | null;
+  canonical_url: string; name: string; display_name: string; subject: string; grant_id: string | null;
   verified_generation: number | null; access_verified_at: number | null; denied_at: number | null;
 }
 interface Person {
@@ -38,7 +38,7 @@ interface Session {
 }
 interface Grant {
   id: string; host_id: string; purpose: Purpose; identity_id: string; user_id: string;
-  registration_binding: string; credential_ref: string; revoked_at: number | null;
+  registration_binding: string; credential_ref: string; revoked_at: number | null; superseded_by: string | null;
 }
 interface Intent {
   intent: AuthorizationIntent; target: RepoTarget | null; connection: { id: string; generation: number } | null;
@@ -52,7 +52,7 @@ interface Options extends Transport {
   registry: Registry;
   now?: () => number;
 }
-const vaultBinding = (grant: Omit<Grant, 'credential_ref' | 'revoked_at'>) => JSON.stringify([
+const vaultBinding = (grant: Omit<Grant, 'credential_ref' | 'revoked_at' | 'superseded_by'>) => JSON.stringify([
   grant.user_id, grant.purpose, grant.host_id, grant.identity_id, grant.registration_binding, grant.id,
 ]);
 
@@ -90,9 +90,9 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     const connection = getConnection(connectionId, requester.id);
     if (!connection || connection.denied_at !== null) return 'denied';
     const grant = connection.grant_id ? getGrant(connection.grant_id, requester.id) : undefined;
-    if (!grant || grant.purpose !== 'repository' || !bound(grant) || connection.verified_generation !== connection.generation ||
+    if (!grant || grant.purpose !== 'repository' || !bound(grant) || grant.revoked_at !== null) return 'denied';
+    if (connection.verified_generation !== connection.generation ||
         connection.access_verified_at === null || at < connection.access_verified_at) return 'unverified';
-    if (grant.revoked_at !== null) return 'denied';
     return at - connection.access_verified_at < fifteenMinutes ? 'valid' : 'unverified';
   }
 
@@ -109,7 +109,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     if ('hostId' in intent) hostId = intent.hostId;
     else if (intent.intent === 'reconnect_copilot') {
       const existing = getGrant(intent.copilotAccountId, owner ?? '');
-      if (existing?.purpose !== 'copilot') throw new ApiFailure('NOT_FOUND');
+      if (existing?.purpose !== 'copilot' || existing.superseded_by !== null) throw new ApiFailure('NOT_FOUND');
       hostId = existing.host_id;
     } else {
       const existing = intent.intent === 'reconnect' ? getConnection(intent.connectionId, owner ?? '') : undefined;
@@ -138,8 +138,12 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       'SELECT * FROM identities WHERE provider = ? AND issuer = ? AND subject = ?',
     ).get(provider, issuer, proof.subject);
     if (current && owner !== null && current.user_id !== owner) throw new ApiFailure('CONNECTION_ACCOUNT_CONFLICT');
-    const userId = current?.user_id ?? owner ?? randomUUID();
-    if (!current && owner === null) db.prepare('INSERT INTO users VALUES (?)').run(userId);
+    const legacy = registration.purpose === 'portal' && !current ? db.prepare<[string, string], { id: string; user_id: string }>(`
+      SELECT i.id,i.user_id FROM legacy_portal_claims c JOIN identities i ON i.id=c.identity_id
+      WHERE i.provider='github' AND i.issuer=? AND i.subject=?`).get(registration.issuer, proof.subject) : undefined;
+    const userId = current?.user_id ?? owner ?? legacy?.user_id ?? randomUUID();
+    if (!current && owner === null && !legacy) db.prepare('INSERT INTO users VALUES (?)').run(userId);
+    if (legacy) db.prepare('DELETE FROM legacy_portal_claims WHERE identity_id=?').run(legacy.id);
     const id = current?.id ?? randomUUID();
     db.prepare(`INSERT INTO identities (id,user_id,provider,issuer,subject,display_name,avatar_url) VALUES (?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name, avatar_url=excluded.avatar_url`)
@@ -193,11 +197,20 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     const registration = registry.bound(pending.host_id, purpose, pending.registration_binding);
     if (!registration || registration.provider !== provider) throw new ApiFailure('INVALID_REQUEST');
     if (input.code === null) return { redirectTo: destination[purpose] };
-    const proof = await redeem({ registration, callback: callbackUrl(provider), code: input.code, verifier: pending.verifier, target: intent.target });
+    const proof = await redeem({
+      registration, callback: callbackUrl(provider), code: input.code, verifier: pending.verifier, target: intent.target,
+    }).catch((error: unknown) => {
+      if (error instanceof RepositoryAuthorizationDenied && intent.connection && session.user_id && getSession(sessionId)) {
+        const original = getConnection(intent.connection.id, session.user_id);
+        if (original?.subject === error.subject) markConnectionDenied(original.id, { id: session.user_id }, intent.connection.generation);
+      }
+      throw error;
+    });
     if (!getSession(sessionId)) throw new ApiFailure('AUTH_REQUIRED');
     const reconnectCopilot = intent.intent.intent === 'reconnect_copilot' ? intent.intent.copilotAccountId : null;
     let newRef: string | undefined;
     let previousRef: string | undefined;
+    let supersededRef: string | undefined;
     let result: { redirectTo: string; sessionId?: string };
     try {
       result = db.transaction(() => {
@@ -205,7 +218,11 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
         const old = db.prepare<[string, string, string, string], Grant>(
           'SELECT * FROM delegated_grants WHERE user_id=? AND identity_id=? AND purpose=? AND registration_binding=?',
         ).get(person.user_id, person.id, purpose, registration.binding);
-        if (reconnectCopilot && reconnectCopilot !== old?.id) throw new ApiFailure('COPILOT_REAUTH_REQUIRED');
+        const previousAccount = reconnectCopilot ? getGrant(reconnectCopilot, person.user_id) : undefined;
+        if (reconnectCopilot && (previousAccount?.purpose !== 'copilot' || previousAccount.superseded_by !== null ||
+            previousAccount.identity_id !== person.id || previousAccount.host_id !== registration.hostId)) {
+          throw new ApiFailure('COPILOT_REAUTH_REQUIRED');
+        }
         const grant = {
           id: old?.id ?? randomUUID(), user_id: person.user_id, identity_id: person.id, purpose,
           host_id: registration.hostId, registration_binding: registration.binding,
@@ -216,10 +233,18 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
         }
         newRef = vault.put(vaultBinding(grant), proof.tokens);
         previousRef = old?.credential_ref;
-        db.prepare(`INSERT INTO delegated_grants VALUES (?,?,?,?,?,?,?,NULL)
+        db.prepare(`INSERT INTO delegated_grants
+          (id,user_id,identity_id,host_id,purpose,registration_binding,credential_ref,revoked_at) VALUES (?,?,?,?,?,?,?,NULL)
           ON CONFLICT(id) DO UPDATE SET credential_ref=excluded.credential_ref,revoked_at=NULL`)
           .run(grant.id, grant.user_id, grant.identity_id, grant.host_id, grant.purpose, grant.registration_binding, newRef);
         if (purpose === 'repository' && proof.repo && !old) persistConnection(person, registration, intent, proof.repo, grant.id);
+        if (previousAccount && previousAccount.id !== grant.id) {
+          db.prepare('UPDATE delegated_grants SET superseded_by=?,revoked_at=? WHERE id=?')
+            .run(grant.id, now(), previousAccount.id);
+          db.prepare('UPDATE copilot_defaults SET account_id=? WHERE user_id=? AND account_id=?')
+            .run(grant.id, grant.user_id, previousAccount.id);
+          supersededRef = previousAccount.credential_ref;
+        }
         if (purpose !== 'portal') return { redirectTo: destination[purpose] };
         db.prepare('DELETE FROM portal_sessions WHERE session_hash=?').run(hash(sessionId));
         return { redirectTo: '/', sessionId: createSession(person.user_id, person.id, registration).sessionId };
@@ -229,6 +254,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       throw error;
     }
     if (previousRef) vault.delete(previousRef);
+    if (supersededRef) vault.delete(supersededRef);
     return result;
   }
 
@@ -308,7 +334,8 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     },
     copilotAccounts(requester: Requester): ApiDto<'copilotAccounts'> {
       const rows = db.prepare<[string], Grant & { display_name: string }>(`SELECT g.*, i.display_name FROM delegated_grants g
-        JOIN identities i ON i.id=g.identity_id WHERE g.user_id=? AND g.purpose='copilot' ORDER BY i.display_name,g.id`).all(requester.id);
+        JOIN identities i ON i.id=g.identity_id WHERE g.user_id=? AND g.purpose='copilot' AND g.superseded_by IS NULL
+        ORDER BY i.display_name,g.id`).all(requester.id);
       const selected = db.prepare<[string], { account_id: string }>('SELECT account_id FROM copilot_defaults WHERE user_id=?').get(requester.id);
       return {
         items: rows.map((g) => ({
@@ -331,6 +358,12 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     },
   } satisfies PortalModules['identity'];
 
+  function markConnectionDenied(connectionId: string, requester: Requester, generation: number): boolean {
+    return db.prepare(`UPDATE connection_access SET denied_at=? WHERE connection_id=? AND user_id=? AND generation=?
+      AND EXISTS (SELECT 1 FROM repo_connections c WHERE c.id=connection_id AND c.retired_at IS NULL AND c.generation=?)`)
+      .run(now(), connectionId, requester.id, generation, generation).changes === 1;
+  }
+
   return {
     ...identity,
     readGrant,
@@ -344,10 +377,6 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
         })),
       };
     },
-    markConnectionDenied(connectionId: string, requester: Requester, generation: number): boolean {
-      return db.prepare(`UPDATE connection_access SET denied_at=? WHERE connection_id=? AND user_id=? AND generation=?
-        AND EXISTS (SELECT 1 FROM repo_connections c WHERE c.id=connection_id AND c.retired_at IS NULL AND c.generation=?)`)
-        .run(now(), connectionId, requester.id, generation, generation).changes === 1;
-    },
+    markConnectionDenied,
   };
 }

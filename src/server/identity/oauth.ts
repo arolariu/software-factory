@@ -19,6 +19,14 @@ export interface Redemption {
   target: RepoTarget | null;
 }
 
+export class RepositoryAuthorizationDenied extends ApiFailure {
+  readonly subject: string;
+  constructor(subject: string) {
+    super('ACCESS_DENIED');
+    this.subject = subject;
+  }
+}
+
 export function authorizationUrl(registration: Registration, callback: string, state: string, verifier: string): string {
   const url = new URL(registration.authorizeUrl);
   url.search = new URLSearchParams({
@@ -170,9 +178,16 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
       const person = await request(registration.profileUrl, { headers });
       const label = registration.provider === 'github'
         ? person['name'] || person['login'] : person['displayName'];
+      const account = subject(person['id']);
+      const repo = target && await repository(registration, target, headers).catch((error: unknown) => {
+        if (error instanceof ApiFailure && (error.code === 'ACCESS_DENIED' || error.code === 'NOT_FOUND')) {
+          throw new RepositoryAuthorizationDenied(account);
+        }
+        throw error;
+      });
       return {
-        subject: subject(person['id']), label: string(label), avatarUrl: avatar(person['avatar_url']), tokens,
-        ...(target && { repo: await repository(registration, target, headers) }),
+        subject: account, label: string(label), avatarUrl: avatar(person['avatar_url']), tokens,
+        ...(repo && { repo }),
       };
     },
     refresh(registration: Registration, previous: Tokens): Promise<Tokens> {

@@ -2,6 +2,16 @@ ALTER TABLE identities ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE identities ADD COLUMN avatar_url TEXT;
 ALTER TABLE repositories ADD COLUMN name TEXT NOT NULL DEFAULT '';
 
+CREATE TABLE legacy_portal_claims (
+  identity_id TEXT PRIMARY KEY REFERENCES identities(id)
+);
+-- Only pre-migration owners with a single identity are unambiguous.
+INSERT INTO legacy_portal_claims
+  SELECT i.id FROM identities i
+  WHERE i.provider='github' AND NOT EXISTS (
+    SELECT 1 FROM identities other WHERE other.user_id=i.user_id AND other.id<>i.id
+  );
+
 CREATE TABLE portal_sessions (
   session_hash TEXT PRIMARY KEY NOT NULL,
   csrf_token TEXT NOT NULL,
@@ -38,6 +48,7 @@ CREATE TABLE delegated_grants (
   registration_binding TEXT NOT NULL,
   credential_ref TEXT NOT NULL,
   revoked_at INTEGER,
+  superseded_by TEXT REFERENCES delegated_grants(id),
   FOREIGN KEY (identity_id, user_id) REFERENCES identities(id, user_id),
   UNIQUE (user_id, identity_id, host_id, purpose, registration_binding),
   UNIQUE (id, user_id, purpose),
