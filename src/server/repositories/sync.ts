@@ -1,9 +1,11 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type SQLite from 'better-sqlite3';
 import Value from 'typebox/value';
 import { ApiSchemas, type ApiDto, type OperationView } from '../../shared/api/schemas.js';
+import { sha256Hex } from '../digest.js';
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
+import { createCursorCodec } from './cursors.js';
 import type { IssueRow, PullRequestRow, RepositoryAccess, RepositoryProvider } from './provider.js';
 
 interface Access {
@@ -31,7 +33,10 @@ type Job = {
   problem_code: string | null; sources: string | null;
 };
 const catalog = ['work_items', 'pull_requests'] as const;
-const status = (error: unknown) => error instanceof ApiFailure ? error.code : 'PROVIDER_ERROR';
+const sessionsUnavailable = { name: 'sessions', state: 'unavailable' } as const;
+type SettledSources = [PromiseSettledResult<IssueRow[]>, PromiseSettledResult<PullRequestRow[]>];
+const freshnessWindow = 900_000;
+const errorCode = (error: unknown) => error instanceof ApiFailure ? error.code : 'PROVIDER_ERROR';
 const pageLimit = (input: { limit?: string }) => Number(input.limit ?? '50');
 
 export function createRepositoryService({ db, cursorKey, access, provider, now = Date.now }: Options) {
@@ -42,22 +47,7 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
   const sourceRows = db.prepare<[string, Source, string, number, number], { ordinal: number; payload: string }>(`
     SELECT ordinal,payload FROM repository_rows WHERE connection_id=? AND source=? AND view_state=? AND ordinal>?
     ORDER BY ordinal LIMIT ?`);
-  const mac = (encoded: string) => createHmac('sha256', cursorKey).update(encoded).digest();
-  function cursor(scope: string, revision: string, position: number | string) {
-    const encoded = Buffer.from(JSON.stringify([scope, revision, position])).toString('base64url');
-    return `${encoded}.${mac(encoded).toString('base64url')}`;
-  }
-  function position<T extends number | string>(input: string | undefined, scope: string, revision: string, initial: T): T {
-    if (input === undefined) return initial;
-    const [encoded, signature, extra] = input.split('.');
-    if (!encoded || !signature || extra !== undefined) throw new ApiFailure('SNAPSHOT_CHANGED');
-    const bytes = Buffer.from(signature, 'base64url');
-    const expected = mac(encoded);
-    if (bytes.length !== expected.length || !timingSafeEqual(bytes, expected)) throw new ApiFailure('SNAPSHOT_CHANGED');
-    const [owner, current, value] = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as [string, string, T];
-    if (owner !== scope || current !== revision || typeof value !== typeof initial) throw new ApiFailure('SNAPSHOT_CHANGED');
-    return value;
-  }
+  const { encode: cursor, decode: position } = createCursorCodec(cursorKey);
 
   function connection(id: string, requester: Requester, cached = false) {
     const found = access.resolve(id, requester);
@@ -79,7 +69,7 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
       return { freshness: meta?.failed ? 'unavailable' : 'not_synced', items: null, fetchedAt: null, nextCursor: null };
     }
     // A successful read in another provider scope cannot renew this source's cached rows.
-    if (now() - meta.fetched_at >= 900_000 || now() < meta.fetched_at) throw new ApiFailure('ACCESS_UNVERIFIED');
+    if (now() - meta.fetched_at >= freshnessWindow || now() < meta.fetched_at) throw new ApiFailure('ACCESS_UNVERIFIED');
     const scope = JSON.stringify([requester.id, id, found.generation, kind, query.state]);
     const limit = pageLimit(query);
     const after = position<number>(query.cursor, scope, meta.revision, -1);
@@ -128,10 +118,64 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
       if (grant === 'unverified') access.recordVerification(id, requester, found.generation);
       return result;
     } catch (error) {
-      if (status(error) === 'ACCESS_DENIED') access.deny(id, requester, found.generation);
-      if (grant === 'unverified' && status(error) === 'PROVIDER_ERROR') throw new ApiFailure('ACCESS_UNVERIFIED');
+      if (errorCode(error) === 'ACCESS_DENIED') access.deny(id, requester, found.generation);
+      if (grant === 'unverified' && errorCode(error) === 'PROVIDER_ERROR') throw new ApiFailure('ACCESS_UNVERIFIED');
       throw error;
     }
+  }
+
+  const claimJob = () => db.prepare<[], Job>(`UPDATE repository_sync SET state='running' WHERE id=(
+    SELECT id FROM repository_sync WHERE state='queued' ORDER BY created_at,id LIMIT 1
+  ) RETURNING *`).get();
+
+  function assertRunnable(found: RepositoryAccess | undefined, job: Job, requester: Requester): asserts found is RepositoryAccess {
+    if (!found || found.generation !== job.generation) throw new ApiFailure('ACCESS_UNVERIFIED');
+    if (access.readGrant(found.id, requester) === 'denied') throw new ApiFailure('ACCESS_DENIED');
+  }
+
+  async function fetchSources(active: RepositoryAccess, requester: Requester): Promise<SettledSources> {
+    await access.verify(active, requester);
+    const client = await provider(active, requester);
+    const observeDenial = <T>(pending: Promise<T>) => pending.catch((error: unknown) => {
+      if (errorCode(error) === 'ACCESS_DENIED') access.deny(active.id, requester, active.generation);
+      throw error;
+    });
+    return Promise.allSettled([observeDenial(client.issues()), observeDenial(client.pullRequests())]);
+  }
+
+  function storeResults(job: Job, active: RepositoryAccess, requester: Requester, [issues, pullRequests]: SettledSources) {
+    const sources = [
+      { kind: 'work_items', schema: ApiSchemas.issues, result: issues },
+      { kind: 'pull_requests', schema: ApiSchemas.pullRequests, result: pullRequests },
+    ] as const;
+    db.transaction(() => {
+      const outcomes: SourceResults = [];
+      let completed = 0;
+      for (const { kind, schema, result } of sources) {
+        if (result.status === 'fulfilled' && Value.Check(schema, {
+          freshness: 'current', items: result.value, nextCursor: null, fetchedAt: new Date(now()).toISOString(),
+        })) {
+          save(active, requester, kind, result.value);
+          completed++;
+          outcomes.push({ name: kind, state: 'updated' });
+        } else outcomes.push(failSource(active, kind));
+      }
+      outcomes.push(sessionsUnavailable);
+      if (completed > 0) access.recordVerification(active.id, requester, active.generation);
+      const state = completed === catalog.length ? 'completed' : completed > 0 ? 'partial' : 'failed';
+      finish(job, state, state === 'completed' ? null : 'PROVIDER_ERROR', outcomes);
+    }).immediate();
+  }
+
+  function failJob(job: Job, requester: Requester, original: RepositoryAccess | undefined, code: string) {
+    db.transaction(() => {
+      let outcomes: SourceResults | null = null;
+      if (original?.generation === job.generation) {
+        if (code === 'ACCESS_DENIED') access.deny(original.id, requester, original.generation);
+        else if (current(original, requester)) outcomes = [...catalog.map((kind) => failSource(original, kind)), sessionsUnavailable];
+      }
+      finish(job, 'failed', code, outcomes);
+    }).immediate();
   }
 
   return {
@@ -156,7 +200,7 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
           return result;
         }
         const scope = JSON.stringify([requester.id, id, found.generation, key, 'checks']);
-        const revision = createHash('sha256').update(JSON.stringify(result)).digest('hex');
+        const revision = sha256Hex(JSON.stringify(result));
         const from = position<number>(query.cursor, scope, revision, 0);
         const to = from + pageLimit(query);
         return { ...result, items: {
@@ -191,64 +235,23 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
     },
     async runNextOperation(signal?: AbortSignal): Promise<boolean> {
       if (signal?.aborted) return false;
-      const job = db.prepare<[], Job>(`UPDATE repository_sync SET state='running' WHERE id=(
-        SELECT id FROM repository_sync WHERE state='queued' ORDER BY created_at,id LIMIT 1
-      ) RETURNING *`).get();
+      const job = claimJob();
       if (!job) return false;
       const requester = { id: job.user_id };
       let original: RepositoryAccess | undefined;
       try {
         original = access.resolve(job.connection_id, requester);
-        if (!original || original.generation !== job.generation) throw new ApiFailure('ACCESS_UNVERIFIED');
-        if (access.readGrant(original.id, requester) === 'denied') throw new ApiFailure('ACCESS_DENIED');
-        const active = original;
-        await access.verify(original, requester);
-        const client = await provider(original, requester);
-        const observeDenial = <T>(pending: Promise<T>) => pending.catch((error: unknown) => {
-          if (status(error) === 'ACCESS_DENIED') access.deny(active.id, requester, active.generation);
-          throw error;
-        });
-        const results = await Promise.allSettled([observeDenial(client.issues()), observeDenial(client.pullRequests())]);
+        assertRunnable(original, job, requester);
+        const results = await fetchSources(original, requester);
         if (signal?.aborted) return true;
-        if (results.some((item) => item.status === 'rejected' && status(item.reason) === 'ACCESS_DENIED')) {
+        if (results.some((item) => item.status === 'rejected' && errorCode(item.reason) === 'ACCESS_DENIED')) {
           throw new ApiFailure('ACCESS_DENIED');
         }
         if (!current(original, requester)) throw new ApiFailure('ACCESS_UNVERIFIED');
-        db.transaction(() => {
-          const outcomes: SourceResults = [];
-          let completed = 0;
-          for (const [index, kind] of catalog.entries()) {
-            const value = results[index];
-            const schema = kind === 'work_items' ? ApiSchemas.issues : ApiSchemas.pullRequests;
-            const complete = value?.status === 'fulfilled' && Value.Check(schema, {
-              freshness: 'current', items: value.value, nextCursor: null, fetchedAt: new Date(now()).toISOString(),
-            });
-            if (complete && value?.status === 'fulfilled') {
-              save(active, requester, kind, value.value);
-              completed++;
-              outcomes.push({ name: kind, state: 'updated' });
-            } else outcomes.push(failSource(active, kind));
-          }
-          outcomes.push({ name: 'sessions', state: 'unavailable' });
-          if (completed > 0) access.recordVerification(active.id, requester, active.generation);
-          finish(job, completed === catalog.length ? 'completed' : completed ? 'partial' : 'failed',
-            completed === catalog.length ? null : 'PROVIDER_ERROR', outcomes);
-        }).immediate();
+        storeResults(job, original, requester, results);
       } catch (error) {
         if (signal?.aborted) return true;
-        const active = original;
-        const code = status(error);
-        db.transaction(() => {
-          let outcomes: SourceResults | null = null;
-          if (active?.generation === job.generation) {
-            if (code === 'ACCESS_DENIED') access.deny(active.id, requester, active.generation);
-            else if (current(active, requester)) {
-              outcomes = catalog.map((kind) => failSource(active, kind));
-              outcomes.push({ name: 'sessions', state: 'unavailable' });
-            }
-          }
-          finish(job, 'failed', code, outcomes);
-        }).immediate();
+        failJob(job, requester, original, errorCode(error));
       }
       return true;
     },
