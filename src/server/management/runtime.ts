@@ -1,0 +1,80 @@
+import { existsSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
+import { join } from 'node:path';
+import type SQLite from 'better-sqlite3';
+import { openCredentialVault } from '../identity/credentials.js';
+import { createRegistry } from '../identity/github-hosts.js';
+import { createConfiguredPortal } from '../identity/portal.js';
+import { createGitHubDeviceFlow } from '../identity/device-flow.js';
+import { createAuthorizationService } from './authorization.js';
+import { createManagementSettings } from './settings.js';
+import { createSetupStore } from './setup.js';
+import { loadOrInitializeVaultKey } from './vault-key.js';
+
+export function managementOrigin(value: string): string {
+  const parsed = URL.parse(value);
+  if (!parsed || parsed.protocol !== 'https:' || parsed.origin !== value) {
+    throw new Error('Management mode requires a canonical HTTPS public origin.');
+  }
+  return parsed.origin;
+}
+
+export function assertManagementData(db: SQLite.Database) {
+  const setup = createSetupStore(db);
+  if (!setup.owner() && db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
+    throw new Error('Management setup cannot claim a populated legacy instance.');
+  }
+  return setup;
+}
+
+export interface ManagementOptions {
+  publicOrigin: string;
+  githubClientId?: string;
+}
+
+export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch) {
+  const origin = managementOrigin(options.publicOrigin);
+  const setup = assertManagementData(db);
+  const vaultPath = join(dataDir, 'credentials.sqlite');
+  const key = loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), existsSync(vaultPath));
+  const { githubClientId } = options;
+  try {
+    const registry = createRegistry(githubClientId ? [{
+      hostname: 'github.com', label: 'GitHub', deviceClientId: githubClientId,
+    }] : []);
+    const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
+    const vault = openCredentialVault(vaultPath, key);
+    const lifecycle = new AbortController();
+    const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {
+      ...options, signal: AbortSignal.any([lifecycle.signal, ...(options?.signal ? [options.signal] : [])]),
+    });
+    const configured = githubClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen) : undefined;
+    const settings = githubClientId ? createManagementSettings(db, githubClientId) : undefined;
+    const authorization = configured && settings ? createAuthorizationService({
+      db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetchWhileOpen),
+      repositoryAllowed: settings.repositoryAllowed,
+    }) : undefined;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let pending: Promise<void> | undefined;
+    const stop = () => { clearInterval(timer); lifecycle.abort(); configured?.stop(); };
+    return {
+      origin, setup, authorization, portal: configured?.portal, settings,
+      disconnectRepository: configured?.identity.disconnectRepository,
+      start() {
+        configured?.start();
+        if (authorization) timer = setInterval(() => {
+          if (pending) return;
+          pending = authorization.pollNext().catch(() => console.error('Authorization worker failed.'))
+            .finally(() => { pending = undefined; });
+        }, 1_000).unref();
+      },
+      stop,
+      async close() {
+        stop();
+        await pending;
+        if (configured) await configured.close();
+        else { cursorKey.fill(0); vault.close(); }
+      },
+    };
+  } finally { key.fill(0); }
+}

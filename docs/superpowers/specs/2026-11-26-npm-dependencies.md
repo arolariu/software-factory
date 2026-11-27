@@ -53,7 +53,7 @@ save-exact=true
 omit-lockfile-registry-resolved=true
 ```
 
-Configure the registry separately, via the approved developer npm config or `NPM_CONFIG_REGISTRY` in controlled CI. If access needs credentials, use a scoped npm config supplied to the Docker install step via a [BuildKit secret mount](https://docs.docker.com/build/building/secrets/). Do not use Docker `ARG`/`ENV` for secrets, copy the credential file into an image, or commit it. Do not add an automatic fallback that routes company installs outside the approved feed.
+Configure the registry separately, via the approved developer npm config or `NPM_CONFIG_REGISTRY` in controlled CI. Supply a scoped npm config to Podman using a [build secret mount](https://docs.podman.io/en/latest/markdown/podman-build.1.html#secret-id-id-src-env-env-type-file-env). Do not use build `ARG`/`ENV` for secrets, copy the credential file into an image, or commit it. Do not add an automatic fallback that routes company installs outside the approved feed.
 
 Generate `package-lock.json` through npm with `--omit-lockfile-registry-resolved`; do not hand-edit tarball URLs. [npm documents](https://docs.npmjs.com/cli/v11/using-npm/config/#omit-lockfile-registry-resolved) that registry dependencies then omit `resolved`; [`npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci/) uses the configured registry to locate artifacts. Exact versions and integrity remain locked; there can be extra registry lookups. The option does **not** sanitize Git, explicit tarball, or file dependencies, so keep those out of the initial manifest.
 

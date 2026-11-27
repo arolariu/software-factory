@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": ["svelte", "vite/client", "node"]
+  },
+  "include": ["src/web/**/*.ts", "src/web/**/*.svelte", "vite.config.ts", "vitest.ui.config.ts"]
+}

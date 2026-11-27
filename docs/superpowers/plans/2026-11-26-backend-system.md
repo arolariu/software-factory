@@ -6,7 +6,7 @@
 
 **Architecture:** Fastify composes identity, repository, task, runtime, and persistence modules in one process. SQLite is authoritative for scoped snapshots and durable intents; an in-process loop performs supported effects outside transactions and reconciles interrupted work.
 
-**Tech Stack:** TypeScript, Fastify 5, npm, a supported Node LTS on Debian/glibc, host-local SQLite, Vitest, Docker. First candidate: Node 24 LTS and `better-sqlite3`; verify the pinned combination in the image before using it. Pin the compatible SDK only when validating the runtime adapter.
+**Tech Stack:** TypeScript, Fastify 5, npm, a supported Node LTS on Debian/glibc, host-local SQLite, Vitest, and Podman-built OCI packaging verified on Podman and Rancher Moby. Pin the compatible SDK only when validating the runtime adapter.
 
 **Spec:** [Backend system design](../specs/2026-11-26-backend-system-design.md). The [Internal API design](../specs/2026-11-26-internal-api-design.md) owns HTTP DTOs, routes, and errors.
 
@@ -34,14 +34,14 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `package.json`, `package-lock.json`, `tsconfig.json`, `Dockerfile`, `.dockerignore` | Runtime pins, `check`, `test`, `build`, container packaging |
+| `package.json`, `package-lock.json`, `tsconfig.json`, `Containerfile`, `.containerignore` | Runtime pins, `check`, `test`, `build`, container packaging |
 | `src/server/build-app.ts`, `src/server/main.ts` | Testable Fastify composition and production process lifecycle |
 | `src/server/persistence/{open,migrations}.ts` | SQLite opening, transactions, migrations and connection/task invariants |
 | `src/server/identity/{module,credentials,github-hosts}.ts` | Portal session, purpose-bound OAuth, exact host registry, and exact-account credential handling |
 | `src/server/repositories/{module,github,azure-devops}.ts` | Verified provider adapters, snapshots, Sync and source reads |
 | `src/server/tasks/{module,projection}.ts` | Authorized task detail and Active Sessions projection |
 | `src/server/operations/{module,runner}.ts`, `src/server/runtime/capabilities.ts` | Durable effect claims, reconciliation and default-off runtime gate |
-| `tests/backend/{foundation,identity,sync,task-reads,operations}.test.ts`, `tests/backend/container-smoke.ps1` | Fault, isolation-of-data, restart, and packaging tests |
+| Colocated `<module>.test.ts`, `scripts/container-smoke.sh` | Fault, isolation-of-data, restart, and packaging tests |
 
 ---
 
@@ -50,10 +50,10 @@
 **Produces:** `buildApp(options: BuildAppOptions): Promise<FastifyInstance>` in `src/server/build-app.ts`; `openDatabase(path: string): Database` and `migrate(db: Database): void`. `BuildAppOptions` supplies `db`, `staticRoot`, and deployment metadata; once the API plan lands it also supplies `PortalModules`. Use the existing project root, not another server package.
 
 - [ ] Set up the TypeScript/npm/Vitest test harness needed by this task. Add `foundation.test.ts`: assert the injected static entry loads and `/healthz` returns `{status:"ok"}` only after schema readiness; opening and closing the same DB preserves a seeded connection; an intentionally failed migration leaves the prior schema version and readiness false. Assert foreign keys and the partial unique constraints.
-- [ ] Run `npm run test -- tests\backend\foundation.test.ts`; expect failure for the absent composition/migration implementation.
+- [ ] Run `npm run test -- src/server/build-app.test.ts`; expect failure for the absent composition/migration implementation.
 - [ ] Implement the migration runner with transactional version changes, host-local SQLite, WAL and foreign keys. Add the approved schema baseline plus stable connection IDs, retirement, and ownership keys. Port the static shell wiring without substituting the interactive HTML mockup for the application. The container smoke fixture supplies static files; the production image requires real built assets and serves no sample fallback.
-- [ ] Add a non-root multi-stage Docker image and `container-smoke.ps1`: start the image with a disposable host-local data mount and fixture-built static assets, verify the route and DB readiness, replace the container using the same mount, then check the seeded DB row survives. Include a restoration check from a SQLite online backup. Validate the pinned SQLite binding on the target image.
-- [ ] Run `npm run check`, the targeted tests, and `.\tests\backend\container-smoke.ps1`; expect type checks, tests, and replacement/restore smoke to pass.
+- [ ] Add the non-root multi-stage Containerfile and `scripts/container-smoke.sh`: start the built Svelte image with a disposable host-local mount, verify readiness, replace the container, and restore a SQLite online backup. Validate the native binding with Podman and Rancher Moby.
+- [ ] Run `npm run check`, `npm run coverage`, and `bash scripts/container-smoke.sh both "$npm_config_path" --browser`; expect type checks, coverage gates and runtime smoke to pass.
 - [ ] Commit the executable foundation and tests as `feat: add Fastify and SQLite container foundation`.
 
 ### Task 2: Bind identity and connection grants

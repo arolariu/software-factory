@@ -4,7 +4,7 @@ Status: approved for implementation planning
 
 ## Goal and approaches
 
-Run the static Svelte portal and its internal API in one Linux Docker container with TypeScript, Fastify, and host-local SQLite. Start with authenticated browsing and task projections; design task commands now but do not enable live effects until the provider/runtime-specific gates pass. The image is replaceable; the SQLite data, private credentials, and authorized Azure DevOps workspaces are not stateless.
+Run the static Svelte portal and its internal API in one Linux container with TypeScript, Fastify, and host-local SQLite. Build with Podman and verify the image on Podman and Rancher Desktop Moby. Start with authenticated browsing and task projections; design task commands now but do not enable live effects until the provider/runtime-specific gates pass. The image is replaceable; the SQLite data, private credentials, and authorized Azure DevOps workspaces are not stateless.
 
 - **Selected: standalone Fastify modular monolith.** Fastify serves static assets and hosts the [HTTP contract](2026-11-26-internal-api-design.md). Repository and runtime variations sit behind separate interfaces in the same deployment. An in-process operation loop executes durable intent without a queue service.
 - **Not selected: framework-owned server or split services.** SSR does not help the static portal, and separate API and workers add deployment, credential, and recovery coordination before we need independent scaling. Keep the execution seam testable in-process without committing to another process or service.

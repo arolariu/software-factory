@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/server/**/*.test.ts", "src/shared/**/*.test.ts", "playwright.config.ts", "vitest.config.ts"],
+  "exclude": []
+}
