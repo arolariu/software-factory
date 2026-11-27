@@ -6,14 +6,14 @@ import { ApiFailure } from '../http/problems.js';
 import type { CredentialVault, Tokens } from '../identity/credentials.js';
 import { githubDeviceApproval, type createGitHubDeviceFlow } from '../identity/device-flow.js';
 import type { createIdentity } from '../identity/module.js';
-import type { Intent } from '../identity/records.js';
+import { purposeOf, type Intent } from '../identity/records.js';
 import type { Registry } from '../identity/github-hosts.js';
 import { RepositoryAuthorizationDenied, type createOAuthTransport, type VerifiedAuthorization } from '../identity/oauth.js';
 import { sessionHash, type SetupStore, type VerifiedPortalAccount } from './setup.js';
 
 type Identity = Pick<ReturnType<typeof createIdentity>,
   'resolveRequester' | 'selectAuthorization' | 'persistAuthorization' | 'isRequesterSession' | 'recordRepositoryDenial'>;
-type Context = { host: string; binding: string; intent: Intent; purpose: 'portal' | 'repository'; requesterId: string | null };
+type Context = { host: string; binding: string; intent: Intent; purpose: ReturnType<typeof purposeOf>; requesterId: string | null };
 type PendingSecret = { userCode: string; deviceCode: string } | { userCode: string; tokens: Tokens };
 type ReadySecret = { userCode: string; proof: VerifiedAuthorization };
 type Row = {
@@ -30,10 +30,11 @@ interface Options {
   transport: Pick<ReturnType<typeof createOAuthTransport>, 'verifyIdentity'>;
   clock?: () => number;
   repositoryAllowed?: () => boolean;
+  copilotEnabled?: boolean;
 }
 
 export function createAuthorizationService({ db, vault, setup, registry, identity, device, transport,
-  clock = Date.now, repositoryAllowed = () => true }: Options) {
+  clock = Date.now, repositoryAllowed = () => true, copilotEnabled = false }: Options) {
   const data = (row: Row) => JSON.parse(row.context) as Context;
   const binding = (id: string) => `management-flow:${id}`;
   const find = db.prepare<[string, string], Row>('SELECT * FROM management_flows WHERE id=? AND session_hash=?');
@@ -65,10 +66,8 @@ export function createAuthorizationService({ db, vault, setup, registry, identit
       const owner = setup.owner();
       const requester = identity.resolveRequester(sessionId);
       if (!owner && !setup.hasClaim(sessionId)) throw new ApiFailure('SETUP_CODE_INVALID');
-      if (intent.intent !== 'sign_in' && intent.intent !== 'connect' && intent.intent !== 'reconnect') {
-        throw new ApiFailure('CAPABILITY_UNAVAILABLE');
-      }
-      const purpose = intent.intent === 'sign_in' ? 'portal' : 'repository';
+      const purpose = purposeOf(intent);
+      if (purpose === 'copilot' && !copilotEnabled) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
       if (purpose === 'repository' && !repositoryAllowed()) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
       const { registration, pending } = identity.selectAuthorization('github', intent, sessionId, requester);
       if (registration.flow !== 'device' || registration.hostId !== 'github.com') throw new ApiFailure('CAPABILITY_UNAVAILABLE');

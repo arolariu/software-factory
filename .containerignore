@@ -81,6 +81,9 @@ src/server/identity/**
 !src/server/identity/device-flow.test.ts
 !src/server/identity/copilot-access.ts
 !src/server/identity/copilot-access.test.ts
+!src/server/identity/copilot-catalog.ts
+!src/server/identity/copilot-catalog.test.ts
+!src/server/identity/copilot-runtime.ts
 !src/server/identity/credentials.test.ts
 !src/server/identity/github-hosts.ts
 !src/server/identity/github-hosts.test.ts

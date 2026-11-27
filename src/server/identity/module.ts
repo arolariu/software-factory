@@ -260,6 +260,15 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     ...identity,
     readGrant: store.readGrant,
     readTokens,
+    async readCopilotToken(accountId: string, requester: Requester) {
+      const grant = getGrant(accountId, requester.id);
+      if (grant?.purpose !== 'copilot' || grant.superseded_by !== null) throw new ApiFailure('NOT_FOUND');
+      if (grant.host_id !== 'github.com') throw new ApiFailure('CAPABILITY_UNAVAILABLE');
+      if (grant.revoked_at !== null || !bound(grant)) throw new ApiFailure('COPILOT_REAUTH_REQUIRED');
+      const tokens = await readTokens(accountId, requester);
+      if (!/^(?:ghu|gho)_[A-Za-z0-9_]+$/.test(tokens.accessToken)) throw new ApiFailure('COPILOT_REAUTH_REQUIRED');
+      return tokens.accessToken;
+    },
     selectAuthorization,
     persistAuthorization,
     isRequesterSession(sessionHash: string, requester: Requester): boolean {

@@ -85,8 +85,9 @@ it('claims only via the initiating browser and authorizes repositories explicitl
       id: 11, account: { id: 12 }, permissions: { issues: 'read', pull_requests: 'read' },
     }] }))
     .mockResolvedValueOnce(Response.json({ repositories: [{ id: 99 }] }));
+  const inspectCopilot = vi.fn(async () => ({ models: [], quota: [] }));
   const management = openManagementRuntime(db, root, {
-    publicOrigin: origin, githubClientId: 'factory-client',
+    publicOrigin: origin, githubClientId: 'factory-client', inspectCopilot,
   }, wire);
   const authorization = management.authorization;
   if (!authorization || !management.portal) throw new Error('Missing management service');
@@ -152,7 +153,7 @@ it('claims only via the initiating browser and authorizes repositories explicitl
       method: 'PUT', url: '/api/settings/instance', headers: signed, payload: { version, repositoryEnabled },
     });
     const info = await app.inject({ url: '/api/settings/instance', headers: signed });
-    expect(info.json()).toEqual({ version: 0, repositoryEnabled: true, githubClientId: 'factory-client' });
+    expect(info.json()).toEqual({ version: 0, repositoryEnabled: true, githubClientId: 'factory-client', copilotEnabled: true });
     expect(info.body).not.toContain('ghu_');
     expect((await app.inject({ url: '/api/connections', headers: signed })).json()).toEqual({ items: [] });
     expect((await update(0, false)).statusCode).toBe(200);
@@ -161,7 +162,6 @@ it('claims only via the initiating browser and authorizes repositories explicitl
     expect((await update(1, true)).statusCode).toBe(200);
     expect(() => management.settings?.read({ id: 'another-user' })).toThrow('ACCESS_DENIED');
     expect((await app.inject({ url: '/api/settings/instance', headers: foreign })).statusCode).toBe(401);
-    expect((await start(signed, { intent: 'link_copilot', hostId: 'github.com' })).statusCode).toBe(409);
     const repo = await start(signed, { intent: 'connect', repositoryUrl: 'https://github.com/org/repo' });
     const repoId = repo.json().flowId as string;
     await due(repoId);
@@ -177,6 +177,23 @@ it('claims only via the initiating browser and authorizes repositories explicitl
     const connection = (await app.inject({ url: '/api/connections', headers: signed })).json().items[0];
     expect(connection.repositoryUrl).toBe('https://github.com/org/repo');
     expect((await app.inject({ url: `/api/connections/${connection.id}/issues?state=open`, headers: signed })).statusCode).toBe(200);
+    wire.mockResolvedValueOnce(device()).mockResolvedValueOnce(token()).mockResolvedValueOnce(profile());
+    const linked = await start(signed, { intent: 'link_copilot', hostId: 'github.com' });
+    expect(linked.statusCode).toBe(200);
+    const linkedId = linked.json().flowId as string;
+    await due(linkedId);
+    expect((await app.inject({ method: 'POST', url: `/api/authorization/flows/${linkedId}/complete`, headers: signed })).statusCode).toBe(204);
+    const account = (await app.inject({ url: '/api/copilot/accounts', headers: signed })).json().items[0];
+    const catalogUrl = `/api/copilot/accounts/${account.id}/catalog`;
+    expect((await app.inject({ method: 'POST', url: catalogUrl, headers: foreign })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: catalogUrl, headers: { ...signed, origin: 'https://unrelated.example' } })).statusCode).toBe(403);
+    const providerAccount = db.prepare("SELECT id FROM delegated_grants WHERE purpose='repository'").get() as { id: string };
+    expect((await app.inject({ method: 'POST', url: `/api/copilot/accounts/${providerAccount.id}/catalog`, headers: signed })).statusCode).toBe(404);
+    expect(inspectCopilot).not.toHaveBeenCalled();
+    const catalog = await app.inject({ method: 'POST', url: catalogUrl, headers: signed });
+    expect(catalog.json()).toEqual({ models: [], quota: [] });
+    expect(catalog.headers['cache-control']).toBe('no-store');
+    expect(inspectCopilot).toHaveBeenCalledExactlyOnceWith('ghu_fixture');
     wire.mockResolvedValueOnce(device()).mockResolvedValueOnce(token()).mockResolvedValueOnce(profile());
     const secondPre = await init();
     const second = await start(secondPre, signIn);

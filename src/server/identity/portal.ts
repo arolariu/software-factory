@@ -13,6 +13,7 @@ import { createRepositoryProvider } from '../repositories/adapters.js';
 import type { RepositoryAccess } from '../repositories/provider.js';
 import { createRepositoryService } from '../repositories/sync.js';
 import { createTaskReads } from '../persistence/task-reads.js';
+import { createCopilotCatalog, type CatalogInspection } from './copilot-catalog.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
 
@@ -37,7 +38,7 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
 }
 
 export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<typeof parseIdentityConfig>,
-  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch) {
+  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch, inspectCopilot?: CatalogInspection) {
   const workerSignal = new AsyncLocalStorage<AbortSignal>();
   const request: typeof fetch = (input, options) => {
     const worker = workerSignal.getStore();
@@ -73,6 +74,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
     },
   });
   const taskReads = createTaskReads(db, cursorKey, identity.readGrant);
+  const catalog = inspectCopilot && createCopilotCatalog(identity.readCopilotToken, inspectCopilot);
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
   const worker = new AbortController();
@@ -85,7 +87,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
   const portal = {
     publicOrigin: setup.origin,
     modules: {
-      identity,
+      identity: { ...identity, ...(catalog && { copilotCatalog: catalog }) },
       repositories: {
         connections: identity.connections, issues: repositories.issues, issue: repositories.issue,
         pullRequests: repositories.pullRequests, checks: repositories.checks, closeIssue: disabled,

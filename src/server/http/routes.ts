@@ -149,6 +149,13 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
 
   read('/api/me', {}, 'me', (m, p) => m.identity.me(p));
   read('/api/copilot/accounts', {}, 'copilotAccounts', (m, p) => m.identity.copilotAccounts(p));
+  route('POST', '/api/copilot/accounts/:id/catalog', { params: 'byId', body: 'empty' }, async (request, reply) => {
+    const principal = await requester(request);
+    await verifyUnsafe(request);
+    const catalog = modules().identity.copilotCatalog;
+    if (!catalog) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
+    return json(reply, s.copilotCatalog, await catalog(principal, request.params.id));
+  });
   read('/api/connections', {}, 'connections', (m, p) => m.repositories.connections(p));
   read('/api/connections/:id/issues', { params: 'byId', querystring: 'issueQuery' }, 'issues',
     (m, p, r) => m.repositories.issues(p, r.params.id, r.query));

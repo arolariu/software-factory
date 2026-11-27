@@ -106,6 +106,16 @@ export const ApiSchemas = {
   ]),
   authorizationStarted: object({ authorizationUrl: url }),
   copilotAccounts: object({ items: Type.Array(account), defaultAccountId: nullable(id) }),
+  copilotCatalog: object({
+    models: nullable(Type.Array(object({
+      id: nonempty, name: nonempty, policy: names('enabled', 'disabled', 'unconfigured', 'unknown'),
+      reasoning: Type.Array(nonempty), defaultReasoning: nullable(nonempty),
+    }))),
+    quota: nullable(Type.Array(object({
+      kind: names('chat', 'completions', 'premium_interactions'), unit: Type.Literal('requests'),
+      used: credits, limit: nullable(credits), unlimited: Type.Boolean(), resetsAt: nullable(at),
+    }))),
+  }),
   copilotDefault: object({ accountId: nullable(id) }),
   connections: list(object({
     id, repoId: id, name: nonempty, provider, host: nonempty, repositoryUrl: url, accountLabel: nonempty,

@@ -80,6 +80,23 @@ it('uses an exact tenant registration, rotates the session and never replays an 
   expect(service([github]).resolveRequester(other.session)).toEqual(other.requester);
 });
 
+it('keeps enterprise, stale registration and unsupported tokens out of the GitHub.com SDK', async () => {
+  const identity = service();
+  const signed = await signIn(identity);
+  await start(identity, signed, { intent: 'link_copilot', hostId: 'github.com' })();
+  await start(identity, signed, { intent: 'link_copilot', hostId: 'tenant.ghe.com' })();
+  const accounts = identity.copilotAccounts(signed.requester).items;
+  const original = accounts.find(({ host }) => host === 'github.com');
+  const enterpriseAccount = accounts.find(({ host }) => host === 'tenant.ghe.com');
+  if (!original || !enterpriseAccount) throw new Error('Expected both linked accounts');
+  await expect(identity.readCopilotToken(enterpriseAccount.id, signed.requester)).rejects.toThrow('CAPABILITY_UNAVAILABLE');
+  await expect(identity.readCopilotToken(original.id, signed.requester)).rejects.toThrow('COPILOT_REAUTH_REQUIRED');
+  const changed = service([{ ...github, registrations: { ...github.registrations, copilot: reg('changed') } }]);
+  await expect(changed.readCopilotToken(original.id, signed.requester)).rejects.toThrow('COPILOT_REAUTH_REQUIRED');
+  db.prepare('UPDATE delegated_grants SET revoked_at=? WHERE id=?').run(now, original.id);
+  await expect(identity.readCopilotToken(original.id, signed.requester)).rejects.toThrow('COPILOT_REAUTH_REQUIRED');
+});
+
 it('rejects unknown and changed hosts or registrations and the wrong browser without upstream requests', async () => {
   const identity = service();
   const { sessionId } = identity.csrf(undefined);

@@ -10,6 +10,7 @@ import { createAuthorizationService } from './authorization.js';
 import { createManagementSettings } from './settings.js';
 import { createSetupStore } from './setup.js';
 import { loadOrInitializeVaultKey } from './vault-key.js';
+import type { CatalogInspection } from '../identity/copilot-catalog.js';
 
 export class OwnerAppError extends Error {}
 export class ManagementVaultError extends Error {}
@@ -35,15 +36,17 @@ export interface ManagementOptions {
   githubClientId?: string;
   // The runtime clears the returned buffer after opening the vault.
   loadVaultKey?: (vaultExists: boolean) => Buffer;
+  inspectCopilot?: CatalogInspection;
 }
 
 export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch) {
   const origin = managementOrigin(options.publicOrigin);
   const setup = assertManagementData(db);
   const vaultPath = join(dataDir, 'credentials.sqlite');
-  const { githubClientId } = options;
+  const { githubClientId, inspectCopilot } = options;
+  const copilotEnabled = inspectCopilot !== undefined;
   const registry = createRegistry(githubClientId ? [{
-    hostname: 'github.com', label: 'GitHub', deviceClientId: githubClientId,
+    hostname: 'github.com', label: 'GitHub', deviceClientId: githubClientId, copilotEnabled,
   }] : []);
   const owner = setup.owner();
   if (owner && !registry.bound(owner.host, 'portal', owner.registrationId)) {
@@ -71,11 +74,11 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
     const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {
       ...options, signal: AbortSignal.any([lifecycle.signal, ...(options?.signal ? [options.signal] : [])]),
     });
-    const configured = githubClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen) : undefined;
-    const settings = githubClientId ? createManagementSettings(db, githubClientId) : undefined;
+    const configured = githubClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen, inspectCopilot) : undefined;
+    const settings = githubClientId ? createManagementSettings(db, githubClientId, copilotEnabled) : undefined;
     const authorization = configured && settings ? createAuthorizationService({
       db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetchWhileOpen),
-      repositoryAllowed: settings.repositoryAllowed,
+      repositoryAllowed: settings.repositoryAllowed, copilotEnabled,
     }) : undefined;
     let timer: ReturnType<typeof setInterval> | undefined;
     let pending: Promise<void> | undefined;

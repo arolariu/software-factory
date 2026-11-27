@@ -23,6 +23,7 @@ export interface PortalModules {
     completeAuthorization(provider: AuthorizationProvider, sessionId: string, input: { state: string; code: string | null }): Result<{ redirectTo: string; sessionId?: string }>;
     logout(requester: Requester, sessionId: string): Result<void>;
     copilotAccounts: Read<'copilotAccounts'>;
+    copilotCatalog?: Read<'copilotCatalog', [string]>;
     setDefaultCopilotAccount(requester: Requester, accountId: string | null): Result<void>;
   };
   repositories: {

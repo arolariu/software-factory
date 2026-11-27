@@ -11,6 +11,7 @@ import { openManagementRuntime, type ManagementOptions } from './management/runt
 import { issueOperatorCode } from './management/operator.js';
 import { rebindManagedOwner } from './management/owner-rebind.js';
 import { createSetupStore } from './management/setup.js';
+import { inspectCatalogWithSdk } from './identity/copilot-catalog.js';
 
 interface StartupOptions {
   dataDir: string;
@@ -167,6 +168,7 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       ...(managed && { management: {
         publicOrigin,
         ...(githubClientId && { githubClientId }),
+        ...(env['FACTORY_COPILOT_ACCESS'] === '1' && { inspectCopilot: inspectCatalogWithSdk }),
       } }),
       ...(configFile !== undefined && { identity: {
         configFile, keyFile: env['FACTORY_CREDENTIAL_KEY_FILE'] ?? '/run/secrets/identity-key',
