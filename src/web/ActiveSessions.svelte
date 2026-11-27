@@ -63,7 +63,7 @@
 
 <ReportFrame title="Active Sessions" {report}>
   {#if results}
-    <div class="attention" aria-label="Attention filters">
+    <div class="attention" role="group" aria-label="Attention filters">
       {#each counts as { state, count } (state)}
         <button type="button" aria-pressed={effectiveStatus === state} class:question={state === 'waiting_input' && count > 0}
           onclick={() => { status = state; updateFilters(); }}>{`${labels[state]} ${count}`}</button>
@@ -88,10 +88,10 @@
           {/each}
         </select>
       </div>
-      <span>{`${visible.length} of ${scoped.length} sessions`}</span>
+      <span class="result-count muted" data-numeric>{`${visible.length} of ${scoped.length} sessions`}</span>
     </div>
     {#if !visible.length}
-      <p>{scoped.length ? 'No sessions match this status.' : 'No active sessions in this repository scope.'}</p>
+      <div class="state-panel"><p class="state-heading">{scoped.length ? 'No sessions match this status.' : 'No active sessions in this repository scope.'}</p></div>
     {/if}
     {#each sections as priority (priority)}
       {@const rows = visible.filter((session) => isAttention(session) === priority)}
@@ -101,9 +101,9 @@
           {#each rows as session (session.taskId)}
             <li>
               <div class="session">
-                <span>{repositories.get(session.repoId)}</span>
+                <span class="muted">{repositories.get(session.repoId)}</span>
                 <strong>{`#${session.workItemKey} ${session.title ?? 'Untitled task'}`}</strong>
-                <span>{labels[session.state]}</span>
+                <span class="chip">{labels[session.state]}</span>
                 {#if session.issueUrl}<a href={session.issueUrl}>View issue</a>{/if}
                 <button type="button" aria-expanded={taskId === session.taskId} onclick={() => void viewTask(session.taskId)}>View task</button>
               </div>
@@ -126,16 +126,20 @@
 </ReportFrame>
 
 <style>
-  .attention, .filters, .session { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-  .filter { display: flex; align-items: center; gap: 6px; }
-  .attention, .filters { padding: 8px 12px; border-bottom: 1px solid #dcd6e6; }
-  h3 { margin: 0; font-size: 15px; }
-  h3 { padding: 8px 12px; background: #f4f0f9; }
-  button.question { color: #633c00; background: #fff5dd; }
-  button[aria-pressed="true"] { color: #39215f; background: #e6dcf8; }
-  p { margin: 0; padding: 8px 12px; }
+  .attention, .filters, .session { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem 1rem; min-width: 0; }
+  .filter { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; min-width: 0; }
+  .filter select { min-width: 0; }
+  .filter label { color: var(--muted); font-weight: 600; }
+  .attention, .filters { padding: .65rem 1rem; border-bottom: 1px solid var(--line); }
+  .attention { background: var(--quiet); }
+  .result-count { margin-inline-start: auto; font-size: .88rem; }
+  h3 { margin: 0; font-size: .94rem; padding: .55rem 1rem; background: var(--rail); }
+  button.question { color: var(--question); background: var(--question-surface); }
+  button[aria-pressed="true"] { color: var(--action-hover); background: var(--selection); border-color: var(--action); }
+  .inset p { margin: 0; padding: .55rem .8rem; }
   ul { margin: 0; padding: 0; list-style: none; }
-  li { border-top: 1px solid #dcd6e6; }
-  .session { padding: 6px 12px; overflow-wrap: anywhere; }
-  .inset { margin: 0 12px 8px; border: 1px solid #dcd6e6; border-radius: 4px; background: #f7f6fa; }
+  li { border-top: 1px solid var(--line); }
+  .session { padding: .55rem 1rem; overflow-wrap: anywhere; }
+  .session strong { flex: 1 1 12rem; }
+  .inset { margin: 0 1rem .75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--quiet); }
 </style>

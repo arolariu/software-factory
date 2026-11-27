@@ -58,7 +58,7 @@ it('lists open issues by default and keeps inline evidence inert', async () => {
     return new Response(null, { status: 404 });
   });
   await press('Document startup');
-  await vi.waitFor(() => expect(target.querySelector('.evidence strong')?.textContent).toBe('Instructions'));
+  await vi.waitFor(() => expect(target.querySelector('.evidence .description strong')?.textContent).toBe('Instructions'));
   expect(target.textContent).toContain('Provider comment');
   expect(target.textContent).toContain('Issue author');
   expect(target.textContent).toContain('Unassigned');

@@ -116,46 +116,58 @@
   }
 </script>
 
-<section aria-labelledby="management-heading">
-  <h2 id="management-heading">Factory setup and settings</h2>
-  {#if message}<p role="alert">{message}</p>{/if}
+<section class="sheet settings" aria-labelledby="management-heading">
+  <div class="settings-head">
+    <h2 class="sheet-title" id="management-heading">Factory setup and settings</h2>
+    <p class="muted">Manage GitHub sign-in and the repositories this Factory can read.</p>
+  </div>
+  {#if message}<p class="notice" role="alert">{message}</p>{/if}
   {#if flow}
     {@const current = flow}
+    <div class="group approval">
+    <h3>Approve in GitHub</h3>
     {#if recovery}
       <p role="status">{recovery}</p>
     {:else}
-      <p>Open <a href="https://github.com/login/device" target="_blank" rel="noreferrer">GitHub device approval</a> and enter <strong class="device-code">{flow.browserInstructions.userCode}</strong>.</p>
+      <p>Open <a href="https://github.com/login/device" target="_blank" rel="noreferrer">GitHub device approval</a> and enter this code. Then return here to check approval.</p>
+      <strong class="device-code">{flow.browserInstructions.userCode}</strong>
     {/if}
-    <p aria-live="polite">{`Authorization: ${flowState}`}</p>
-    <button type="button" onclick={() => check(current)} disabled={busy || !!recovery}>Check approval</button>
-    <button type="button" onclick={() => cancel(current)} disabled={busy}>Cancel authorization</button>
+    <p class="muted" aria-live="polite">{`Authorization: ${flowState}`}</p>
+    <div class="controls">
+      <button class="primary" type="button" onclick={() => check(current)} disabled={busy || !!recovery}>Check approval</button>
+      <button type="button" onclick={() => cancel(current)} disabled={busy}>Cancel authorization</button>
+    </div>
+    </div>
   {:else if me && settings}
     {@const currentSettings = settings}
     <div class="group">
       <h3>Account</h3>
-      <p>{`Signed in as ${me.user.displayName}`}</p>
-      <p>{`GitHub App Client ID: ${settings.githubClientId}.`}</p>
+      <div class="account">
+      <div>
+        <p>{`Signed in as ${me.user.displayName}`}</p>
+        <p class="muted">{`GitHub App Client ID: ${settings.githubClientId}.`}</p>
+      </div>
       <button type="button" disabled={busy} onclick={() => void perform(async () => {
         await mutate('/api/auth/logout', 'POST');
         await load();
       })}>Sign out</button>
+      </div>
     </div>
     <div class="group">
       <h3>Repository connections</h3>
       <p>Install the GitHub App on the repositories you want to read. Connecting a repository will ask for approval.</p>
-      <button type="button" disabled={busy}
+      <button class="policy" type="button" disabled={busy}
         onclick={() => toggle(currentSettings)}>{settings.repositoryEnabled ? 'Disable repository authorization' : 'Enable repository authorization'}</button>
       <form onsubmit={(event) => { event.preventDefault(); start({ intent: 'connect', repositoryUrl: repo }); }}>
         <label>GitHub repository URL <input type="url" bind:value={repo} placeholder="https://github.com/org/repo" required /></label>
-        <button type="submit" disabled={busy || !settings.repositoryEnabled || !repo}>Connect repository</button>
+        <button class="primary" type="submit" disabled={busy || !settings.repositoryEnabled || !repo}>Connect repository</button>
       </form>
       <ul>
         {#each connections as connection (connection.id)}
           <li>
-            <strong>{connection.name}</strong>
-            <span>{connection.state}</span>
+            <div class="connection-name"><strong>{connection.name}</strong> <span class="chip">{connection.state}</span></div>
             <button type="button" disabled={busy || !settings.repositoryEnabled} onclick={() => start({ intent: 'reconnect', connectionId: connection.id })}>{`Reconnect ${connection.name}`}</button>
-            <button type="button" disabled={busy} onclick={() => void perform(async () => {
+            <button class="danger-action" type="button" disabled={busy} onclick={() => void perform(async () => {
               await mutate(`/api/connections/${encodeURIComponent(connection.id)}/authorization`, 'DELETE');
               await load();
             })}>{`Disconnect ${connection.name}`}</button>
@@ -169,36 +181,45 @@
       <a href="https://github.com/arolariu/software-factory#check-copilot-access">Read about the operator access check</a>
     </div>
   {:else if setup}
+    <div class="group approval">
     {#if setup.state === 'unclaimed' && !paired}
+      <h3>Pair this browser</h3>
       <p>Generate a setup code in the host terminal, then enter it here.</p>
       <label>Host pairing code <input type="password" bind:value={code} autocomplete="off" /></label>
-      <button type="button" onclick={pair} disabled={busy || !code}>Pair this browser</button>
+      <button class="primary" type="button" onclick={pair} disabled={busy || !code}>Pair this browser</button>
     {:else if setup.signInAvailable}
-      <button type="button" disabled={busy} onclick={() => start({ intent: 'sign_in', hostId: 'github.com' })}>Sign in with GitHub</button>
+      <h3>Sign in</h3>
+      <p>Use your own GitHub account. You’ll approve a device code in a separate tab.</p>
+      <button class="primary" type="button" disabled={busy} onclick={() => start({ intent: 'sign_in', hostId: 'github.com' })}>Sign in with GitHub</button>
     {:else}
       <p>Public GitHub sign-in is not configured on this instance.</p>
     {/if}
+    </div>
+  {:else if busy}
+    <p class="notice" role="status">Loading Factory settings...</p>
   {/if}
 </section>
 
 <style>
-  section { background: white; border: 1px solid #dcd6e6; border-radius: 4px; padding: 12px 16px; }
-  h2 { margin: 0 0 8px; font-size: 16px; }
-  h3 { margin: 0 0 4px; font-size: 14px; }
-  p { margin: 4px 0 8px; }
-  .group { padding: 12px 0; border-top: 1px solid #dcd6e6; }
-  .group:last-child { padding-bottom: 0; }
-  .device-code { font: 600 1.1em Consolas, monospace; }
-  form, li { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
-  label { display: grid; gap: 2px; margin: 6px 0; max-width: 100%; }
-  button, input { font: inherit; color: #211c2c; background: #fff; border: 1px solid #8b8098; border-radius: 4px; padding: 3px 8px; min-height: 28px; box-sizing: border-box; }
-  button { margin: 4px 6px 6px 0; }
-  button:hover:not(:disabled), button:disabled { background: #f4f0f9; }
-  button:disabled { color: #665c70; }
-  input { width: min(22rem, 100%); }
-  ul { margin: 4px 0 0; padding: 0; list-style: none; }
-  li { align-items: center; gap: 4px 8px; border-top: 1px solid #dcd6e6; padding: 3px 0; }
-  a { color: #165f9b; }
-  :is(a, button, input):focus-visible { outline: 2px solid #165f9b; outline-offset: 2px; }
-  p[role='alert'] { color: #8c2039; }
+  .settings { max-inline-size: 52rem; overflow-wrap: anywhere; }
+  .settings-head { padding: 1rem 1.25rem; background: var(--quiet); border-radius: var(--radius) var(--radius) 0 0; }
+  h3 { margin: 0 0 .4rem; font-size: 1rem; font-weight: 700; }
+  p:not(.notice) { margin: .25rem 0 .65rem; max-inline-size: 68ch; }
+  .group { padding: 1rem 1.25rem; border-top: 1px solid var(--line); }
+  .account { display: flex; align-items: center; justify-content: space-between; gap: .6rem 1rem; flex-wrap: wrap; }
+  .account p:last-child, .settings-head p:last-child { margin-bottom: 0; }
+  .controls, form, li { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .approval { min-block-size: 9rem; }
+  .device-code { display: inline-block; font: 650 1.18rem/1.5 var(--mono); letter-spacing: .05em; background: var(--selection); border: 1px solid var(--line); border-radius: var(--radius); padding: .3rem .6rem; }
+  .policy { margin-block: .2rem .7rem; }
+  form { align-items: end; }
+  label { display: grid; gap: .25rem; max-inline-size: 100%; color: var(--muted); font-weight: 600; }
+  form label { flex: 1 1 18rem; }
+  input { inline-size: 100%; }
+  .approval label { max-inline-size: 21rem; margin-block-end: .55rem; }
+  ul { margin: .8rem 0 0; padding: 0; list-style: none; }
+  li { align-items: center; border-top: 1px solid var(--line); padding-block: .55rem; }
+  .connection-name { flex: 1 1 10rem; }
+  .connection-name strong { margin-inline-end: .35rem; }
+  @media (max-width: 480px) { .settings-head, .group { padding-inline: .85rem; } }
 </style>

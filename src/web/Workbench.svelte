@@ -212,15 +212,21 @@
   {:else}<div class="description">{@html providerMarkup(body)}</div>{/if}
 {/snippet}
 
-<section class="workbench" aria-labelledby="repository-heading">
+<section class="workbench sheet" aria-labelledby="repository-heading">
   <div class="heading">
-    <h2 id="repository-heading">Repositories</h2>
-    <a href="/settings/factory">Manage connections</a>
+    <div>
+      <h2 class="sheet-title" id="repository-heading">Repositories</h2>
+      <p class="muted">Triage issues and review pull requests across your connected repositories.</p>
+    </div>
+    <a class="control-link" href="/settings/factory">Manage connections</a>
   </div>
   {#if repos.length}
     <nav aria-label="Repositories" class="repos">
       {#each repos as repo (repo.id)}
-        <a onclick={navigate} href={`${repoPath(repo.id)}/issues?state=open`} aria-current={repo.id === selected?.id ? 'page' : undefined}>{repo.name}</a>
+        <a onclick={navigate} href={`${repoPath(repo.id)}/issues?state=open`} aria-current={repo.id === selected?.id ? 'page' : undefined}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h13v13H7a2 2 0 0 0 0 4h11m-13-2V6a2 2 0 0 1 2-2m2 4h5"/></svg>
+          {repo.name}
+        </a>
       {/each}
     </nav>
   {/if}
@@ -236,40 +242,53 @@
       </nav>
       <div class="actions">
         <button type="button" disabled={busy} onclick={() => { closeDetail(); void run(() => list(repo), repo); }}>Refresh list</button>
-        <button type="button" disabled={busy || syncing} onclick={() => void sync(repo)}>Sync</button>
+        <button class="primary" type="button" disabled={busy || syncing} onclick={() => void sync(repo)}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5v5h-5M4 19v-5h5m-4.1-4a7.5 7.5 0 0 1 12.7-3L20 10M4 14l2.4 3a7.5 7.5 0 0 0 12.7-3"/></svg>
+          Sync
+        </button>
       </div>
     </div>
-    {#if syncNote}<p role="status">{syncNote}</p>{/if}
+    {#if syncNote}<p class="notice" role="status">{syncNote}</p>{/if}
     {#if snapshot?.fetchedAt}
-      <p class="freshness">{snapshot.freshness === 'stale' ? 'Stale snapshot' : 'Last synced'}: <time datetime={snapshot.fetchedAt}>{snapshot.fetchedAt}</time></p>
+      <p class="freshness">{snapshot.freshness === 'stale' ? 'Stale snapshot' : 'Last synced'}: <time datetime={snapshot.fetchedAt}>{snapshot.fetchedAt.replace('T', ' ').slice(0, 19)} UTC</time></p>
     {/if}
     {#if snapshot?.items?.length}
-      <ul class="records">
+      <div class:issue-columns={kind === 'issues'} class="register-head" aria-hidden="true">
+        <span>Ref.</span><span>{kind === 'issues' ? 'Issue' : 'Pull request'}</span>
+        {#if kind === 'issues'}<span>Author</span><span>Opened</span><span>Assigned to</span>
+        {:else}<span>Branch</span><span>Details</span><span>Checks</span>{/if}
+      </div>
+      <ul class="records" aria-label="Repository records">
         {#each snapshot.items as row (row.key)}
           <li class:expanded={expanded === row.key}>
-            <div class="row">
-              <span class="meta">{`#${row.key}`}</span>
+            <div class="row" class:issue-columns={kind === 'issues'}>
+              <span class="record-ref">{`#${row.key}`}</span>
               {#if 'sourceBranch' in row}
-                <a href={row.url} target="_blank" rel="noreferrer">{row.title}</a>
+                <a class="pr-title" href={row.url} target="_blank" rel="noreferrer">{row.title}</a>
                 <span class="meta">{`${row.sourceBranch} to ${row.targetBranch}`}</span>
-                <span class="meta">{origins[row.origin]}</span>
-                {#if row.draft}<span class="meta">Draft</span>{/if}
-                {#if row.state === 'merged'}<span class="meta">Merged</span>{:else if row.state === 'closed'}<span class="meta">Closed without merge</span>{/if}
-                <span class="meta">{row.checks?.total == null ? 'Checks unavailable' : row.checks.total === 0 ? 'No checks' : `${row.checks.passed}/${row.checks.total} passed`}</span>
+                <div class="badges">
+                  <span class="chip">{origins[row.origin]}</span>
+                  {#if row.draft}<span class="chip">Draft</span>{/if}
+                  {#if row.state === 'merged'}<span class="chip">Merged</span>{:else if row.state === 'closed'}<span class="chip">Closed without merge</span>{/if}
+                </div>
+                <span class="meta" data-numeric>{row.checks?.total == null ? 'Checks unavailable' : row.checks.total === 0 ? 'No checks' : `${row.checks.passed}/${row.checks.total} passed`}</span>
               {:else}
-                <button class="title" type="button" aria-expanded={expanded === row.key} onclick={() => void openIssue(repo, row.key)}>{row.title}</button>
-                <span class="meta">{row.author?.displayName ?? 'Unknown author'}</span>
-                <time class="meta" datetime={row.createdAt}>{row.createdAt.slice(0, 10)}</time>
-                <span class="meta">{row.assignees.map((person) => person.displayName).join(', ') || 'Unassigned'}</span>
+                <button class="title" type="button" aria-expanded={expanded === row.key} onclick={() => void openIssue(repo, row.key)}>
+                  <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 4 4 4-4 4"/></svg>
+                  <span>{row.title}</span>
+                </button>
+                <span class="meta"><span class="metadata-term">Author: </span>{row.author?.displayName ?? 'Unknown author'}</span>
+                <span class="meta"><span class="metadata-term">Opened: </span><time datetime={row.createdAt}>{row.createdAt.slice(0, 10)}</time></span>
+                <span class="meta"><span class="metadata-term">Assigned to: </span>{row.assignees.map((person) => person.displayName).join(', ') || 'Unassigned'}</span>
               {/if}
             </div>
             {#if expanded === row.key}
               <div class="evidence">
-                <a href={row.url}>View source issue</a>
+                <header class="evidence-heading"><strong>Issue details</strong><a href={row.url}>View source issue</a></header>
                 {#if detail}
                   {@render providerText(detail.description)}
                   {#each detail.comments.items as comment (comment.id)}
-                    {@render providerText(comment.body)}
+                    <div class="comment">{@render providerText(comment.body)}</div>
                   {/each}
                   {#if detail.comments.nextCursor}
                     {@const cursor = detail.comments.nextCursor}
@@ -289,42 +308,57 @@
         <button type="button" disabled={busy} onclick={() => void run(() => list(repo, cursor), repo)}>Load more</button>
       {/if}
     {:else if snapshot?.items}
-      <p>No records match this view.</p>
+      <div class="state-panel"><p class="state-heading">No records match this view.</p><p class="muted">Try another tab or Sync to check for new activity.</p></div>
     {:else if snapshot}
-      <p>{snapshot.freshness === 'not_synced' ? 'Sync to load issues and pull requests.' : 'This source is unavailable. Try Sync again.'}</p>
+      <div class="state-panel"><p class="state-heading">{snapshot.freshness === 'not_synced' ? 'Sync to load issues and pull requests.' : 'This source is unavailable. Try Sync again.'}</p></div>
     {/if}
   {:else if selected}
-    <p>This connection needs attention. Open Settings to reconnect it.</p>
+    <div class="state-panel"><p class="state-heading">This connection needs attention. Open Settings to reconnect it.</p><a href="/settings/factory">Open Settings</a></div>
   {:else if !busy && !alert}
-    <p>No repository selected. Choose a repository or connect one in Settings.</p>
+    <div class="state-panel"><p class="state-heading">No repository selected. Choose a repository or connect one in Settings.</p><a href="/settings/factory">Connect a repository</a></div>
   {/if}
-  {#if alert}<p role="alert">{alert}</p>{/if}
-  {#if busy}<p role="status">Loading repository data...</p>{/if}
+  {#if alert}<div class="state-panel"><p class="notice" role="alert">{alert}</p></div>{/if}
+  {#if busy}<p class="notice" role="status">Loading repository data...</p>{/if}
 </section>
 
 <style>
-  .workbench { background: #fff; border: 1px solid #dcd6e6; border-radius: 4px; min-width: 0; }
-  .heading, .toolbar, .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-  .heading, .toolbar { justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #dcd6e6; }
-  h2 { margin: 0; font-size: 15px; }
-  nav, .actions { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
-  .repos { padding: 6px 12px; background: #f4f0f9; }
-  nav a { padding: 4px 8px; }
-  .repos [aria-current] { background: #e6dcf8; font-weight: 600; border-radius: 4px; }
-  .toolbar [aria-current] { border-bottom: 2px solid #5933a1; font-weight: 600; }
-  a { color: #165f9b; text-underline-offset: 2px; }
-  button { font: inherit; color: #211c2c; background: #fff; border: 1px solid #8b8098; border-radius: 4px; padding: 3px 8px; min-height: 28px; }
-  button:disabled { color: #665c70; background: #f4f0f9; }
-  button:not(:disabled):hover { background: #f4f0f9; }
-  a:focus-visible, button:focus-visible { outline: 2px solid #165f9b; outline-offset: 2px; }
+  .heading, .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .7rem 1rem; padding: .8rem 1rem; border-bottom: 1px solid var(--line); }
+  .heading p { margin: .25rem 0 0; }
+  nav, .actions, .badges { display: flex; flex-wrap: wrap; gap: .3rem .5rem; align-items: center; }
+  .repos { padding: .5rem 1rem; background: var(--quiet); border-bottom: 1px solid var(--line); }
+  nav a { display: inline-flex; gap: .4rem; align-items: center; padding: .35rem .55rem; min-height: 32px; color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+  nav a:hover, nav [aria-current] { color: var(--action-hover); background: var(--selection); font-weight: 600; }
+  .repos a { border-radius: var(--radius); }
+  .toolbar [aria-current] { box-shadow: inset 0 -2px var(--action); }
+  svg { width: 16px; height: 16px; flex: none; }
   .records { list-style: none; padding: 0; margin: 0; }
-  .records li { border-top: 1px solid #dcd6e6; }
-  .row { padding: 4px 12px; min-height: 30px; overflow-wrap: anywhere; }
-  .title { font-weight: 600; border-color: transparent; background: transparent; text-align: left; }
-  .expanded { background: #f0e9fb; }
-  .evidence { margin: 0 12px 8px; padding: 8px 12px; background: #fff; border: 1px solid #dcd6e6; border-radius: 4px; }
-  .description { white-space: pre-wrap; overflow-wrap: anywhere; padding-inline: 0; }
-  .meta, .freshness { color: #60566c; font-size: 12px; }
-  p { margin: 0; padding: 6px 12px; }
-  section > button { margin: 8px 12px; }
+  .records li { border-top: 1px solid var(--line); }
+  .row, .register-head { display: grid; align-items: center; grid-template-columns: 3.2rem minmax(0, 2fr) minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, .9fr); gap: .4rem .8rem; padding: .5rem 1rem; overflow-wrap: anywhere; }
+  .issue-columns { grid-template-columns: 3.2rem minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, .9fr) minmax(0, 1fr); }
+  .register-head { background: var(--quiet); color: var(--muted); font-size: .82rem; font-weight: 650; }
+  .record-ref { color: var(--muted); font: .88rem/1.5 var(--mono); }
+  .title, .pr-title { font-weight: 700; }
+  .title { display: flex; gap: .35rem; align-items: center; min-width: 0; padding-inline: 0 .4rem; border-color: transparent; background: transparent; text-align: left; }
+  .title span { min-width: 0; overflow-wrap: anywhere; }
+  .title svg { transition: transform 160ms ease-out; color: var(--action); }
+  .title[aria-expanded='true'] svg { transform: rotate(90deg); }
+  .expanded { background: var(--selection); }
+  .evidence { margin: 0 1rem .7rem; padding: .75rem 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .evidence-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem 1rem; padding-block-end: .45rem; border-block-end: 1px solid var(--line); }
+  .description { max-inline-size: 72ch; overflow-wrap: anywhere; margin-block: .6rem; }
+  p.description { white-space: pre-wrap; }
+  .description :global(p), .description :global(ul), .description :global(ol) { margin-block: .5rem; }
+  .description :global(pre), .description :global(table) { display: block; max-width: 100%; overflow-x: auto; }
+  .comment { border-block-start: 1px solid var(--line); }
+  .meta, .freshness { color: var(--muted); font-size: .86rem; }
+  .metadata-term { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+  .freshness { margin: 0; padding: .45rem 1rem; }
+  section > button { margin: .65rem 1rem; }
+  @media (max-width: 955px) {
+    .register-head { display: none; }
+    .row { display: flex; flex-wrap: wrap; }
+    .title, .pr-title { flex: 1 0 calc(100% - 5rem); }
+    .metadata-term { position: static; width: auto; height: auto; clip-path: none; font-weight: 600; }
+  }
+  @media (prefers-reduced-motion: reduce) { .title svg { transition: none; } }
 </style>
