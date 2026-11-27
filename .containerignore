@@ -21,6 +21,7 @@ src/server/**
 !src/server/build-app.test.ts
 !src/server/http/
 src/server/http/**
+!src/server/http/navigation.ts
 !src/server/http/portal-modules.ts
 !src/server/http/problems.ts
 !src/server/http/routes.ts
