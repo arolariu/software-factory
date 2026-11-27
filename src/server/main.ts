@@ -1,7 +1,8 @@
+import { timingSafeEqual } from 'node:crypto';
 import { accessSync, constants, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildApp, type BuildMetadata } from './build-app.js';
+import { buildApp, type BuildAppOptions, type BuildMetadata } from './build-app.js';
 import { openIdentityPortal, type IdentityFiles } from './identity/portal.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
@@ -18,10 +19,24 @@ interface StartupOptions {
   logger?: boolean;
   identity?: IdentityFiles;
   management?: ManagementOptions;
+  desktop?: { channelToken: string };
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
 const invalidPort = 'PORT must be a valid TCP port.';
+const desktopOrigin = 'https://factory.localhost';
+const channelPattern = /^[a-f0-9]{64}$/;
+
+function desktopChannel(token: string): NonNullable<BuildAppOptions['allowRequest']> {
+  const expected = Buffer.from(token, 'hex');
+  return ({ headers, raw }) => {
+    const supplied = headers['x-factory-desktop-channel'];
+    const origin = headers.origin;
+    return headers.host === `127.0.0.1:${raw.socket.localPort}` &&
+      (origin === undefined || origin === desktopOrigin) && typeof supplied === 'string' &&
+      channelPattern.test(supplied) && timingSafeEqual(expected, Buffer.from(supplied, 'hex'));
+  };
+}
 
 export function verifyContainerData(dataDir: string, mode: number, mountInfo: string): void {
   const filesystem = mountInfo.split('\n')
@@ -45,6 +60,13 @@ function parsePort(value: string): number {
 
 export async function startServer(options: StartupOptions) {
   const { port, artifactDir, logger = false } = options;
+  const { desktop } = options;
+  if (desktop && (port !== 0 || options.container || options.identity ||
+    options.management?.publicOrigin !== desktopOrigin || !options.management.loadVaultKey ||
+    !channelPattern.test(desktop.channelToken))) {
+    throw new Error('Desktop runtime requires ephemeral loopback, a native channel and a native vault key.');
+  }
+  const allowRequest = desktop && desktopChannel(desktop.channelToken);
   const dataDir = resolve(options.dataDir);
   if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) throw new Error(invalidPort);
   verifyDataDirectory(dataDir, options.container);
@@ -67,8 +89,9 @@ export async function startServer(options: StartupOptions) {
       db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger,
       ...(portal && { portal }),
       ...(management && { management }),
+      ...(allowRequest && { allowRequest }),
     });
-    const address = await app.listen({ host: '0.0.0.0', port });
+    const address = await app.listen({ host: desktop ? '127.0.0.1' : '0.0.0.0', port });
     auth?.start();
     management?.start();
     const close = async () => {

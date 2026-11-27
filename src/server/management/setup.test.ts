@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -6,6 +6,7 @@ import { openDatabase } from '../persistence/open.js';
 import { migrate } from '../persistence/migrations.js';
 import { createSetupStore } from './setup.js';
 import { loadOrInitializeVaultKey } from './vault-key.js';
+import { openManagementRuntime } from './runtime.js';
 
 const proof = { provider: 'github' as const, host: 'github.com', subject: '42', registrationId: 'portal' };
 
@@ -56,6 +57,40 @@ it('keeps the generated vault key across restart and refuses to replace a missin
     rmSync(path);
     expect(() => loadOrInitializeVaultKey(path, true)).toThrow('Credential encryption key');
   } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+it('uses supplied native key material without creating a hosted key and fails closed on a mismatch', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-native-key-'));
+  const db = openDatabase(join(root, 'factory.sqlite'));
+  try {
+    migrate(db);
+    const publicOrigin = 'https://factory.example';
+    const first = Buffer.alloc(32, 1);
+    const opened = openManagementRuntime(db, root, {
+      publicOrigin, loadVaultKey: (existing) => {
+        expect(existing).toBe(false);
+        return first;
+      },
+    });
+    await opened.close();
+    expect(first.equals(Buffer.alloc(32))).toBe(true);
+
+    const wrong = Buffer.alloc(32, 2);
+    expect(() => openManagementRuntime(db, root, {
+      publicOrigin, loadVaultKey: (existing) => {
+        expect(existing).toBe(true);
+        return wrong;
+      },
+    })).toThrow('does not match the existing vault');
+    expect(wrong.equals(Buffer.alloc(32))).toBe(true);
+    expect(existsSync(join(root, 'management-vault.key'))).toBe(false);
+    await openManagementRuntime(db, root, {
+      publicOrigin, loadVaultKey: () => Buffer.alloc(32, 1),
+    }).close();
+  } finally {
+    db.close();
     rmSync(root, { recursive: true });
   }
 });

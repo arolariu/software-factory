@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import fastifyStatic from '@fastify/static';
 import type SQLite from 'better-sqlite3';
-import Fastify, { LogController, type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
 import { ApiSchemas } from '../shared/api/schemas.js';
 import { isApiPath, isPageNavigation } from './http/navigation.js';
 import type { PortalOptions } from './http/portal-modules.js';
@@ -25,6 +25,7 @@ export interface BuildAppOptions {
   logger?: boolean;
   portal?: PortalOptions;
   management?: ManagementRoutes;
+  allowRequest?: (request: FastifyRequest) => boolean;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -40,6 +41,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } },
     frameworkErrors: sendProblem,
   });
+  if (options.allowRequest) {
+    const allowRequest = options.allowRequest;
+    app.addHook('onRequest', async (request, reply) => {
+      if (!allowRequest(request)) return sendProblem(new ApiFailure('NOT_FOUND'), request, reply);
+    });
+  }
   app.register(fastifyStatic, {
     root: assetsRoot,
     prefix: '/assets/',

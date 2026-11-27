@@ -30,6 +30,8 @@ export function assertManagementData(db: SQLite.Database) {
 export interface ManagementOptions {
   publicOrigin: string;
   githubClientId?: string;
+  // The runtime clears the returned buffer after opening the vault.
+  loadVaultKey?: (vaultExists: boolean) => Buffer;
 }
 
 export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch) {
@@ -44,10 +46,13 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
   if (owner && !registry.bound(owner.host, 'portal', owner.registrationId)) {
     throw new Error('Configured GitHub App does not match the Factory owner. Restore the current Client ID or rebind the owner.');
   }
-  const key = loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), existsSync(vaultPath));
+  const vaultExists = existsSync(vaultPath);
+  const key = options.loadVaultKey
+    ? options.loadVaultKey(vaultExists)
+    : loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), vaultExists);
   try {
-    const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const vault = openCredentialVault(vaultPath, key);
+    const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const lifecycle = new AbortController();
     const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {
       ...options, signal: AbortSignal.any([lifecycle.signal, ...(options?.signal ? [options.signal] : [])]),

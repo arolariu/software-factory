@@ -69,6 +69,8 @@ bash scripts/package-windows-sidecar.sh /path/to/node-v24.22.3-win-x64.zip /path
 
 The script checks the ZIP against the pinned SHA-256, builds committed `HEAD` with pinned npm, and stages only the executable, its license, compiled Factory files and production dependencies. It runs the packaged Node and SQLite against a fresh database before exposing the output. This is a staging directory, not an installer or a supervised desktop application.
 
+The native vault-key component can be tested on Windows with `cargo test --locked --manifest-path src-tauri/vault-key/Cargo.toml`. It uses Windows user-scope DPAPI and refuses to replace a missing or invalid key for an existing vault. The programmatic desktop server binds an ephemeral IPv4 loopback port and rejects requests without the native channel token, including ordinary browser navigation. Neither component is exposed by the hosted CLI or connected to a Tauri shell yet.
+
 ## Verify the Linux image
 
 Supply an npm config scoped to the approved registry outside this repository. The smoke script builds the `Containerfile` with Podman and tests non-root startup, replacement, and online SQLite backup/restore. `both` additionally loads the exact image into an already-running Rancher Desktop **Moby** engine through `rdctl`, without switching engines or invoking a Docker CLI. The Windows path uses the running Podman machine and the shared Windows drive. Do not point either test at a production engine.

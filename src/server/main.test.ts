@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -66,6 +67,53 @@ it('refuses overlapping server listeners without disturbing the original', async
   } finally {
     await first.close();
   }
+});
+
+const nativeKey = () => Buffer.alloc(32, 7);
+const desktopOrigin = 'https://factory.localhost';
+const desktop = { channelToken: 'ab'.repeat(32) };
+
+it('serves desktop setup only on ephemeral IPv4 loopback and through the native channel', async () => {
+  const server = await startServer({
+    dataDir, artifactDir, port: 0, desktop, management: { publicOrigin: desktopOrigin, loadVaultKey: nativeKey },
+  });
+  try {
+    const address = new URL(server.address);
+    expect(address.hostname).toBe('127.0.0.1');
+    expect(Number(address.port)).toBeGreaterThan(0);
+    const channel = { 'x-factory-desktop-channel': desktop.channelToken };
+    for (const [path, headers] of [
+      ['/api/auth/csrf', {}],
+      ['/api/setup/status', { 'x-factory-desktop-channel': '00'.repeat(32) }],
+      ['/api/setup/status', { ...channel, origin: 'https://other.example' }],
+    ] as const) {
+      const denied = await fetch(new URL(path, address), { headers });
+      expect(denied.status).toBe(404);
+      expect(denied.headers.get('set-cookie')).toBeNull();
+    }
+    const wrongHost = await new Promise<number | undefined>((resolve, reject) => {
+      get(new URL('/api/setup/status', address), { headers: { ...channel, host: 'factory.example' } }, (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      }).on('error', reject);
+    });
+    expect(wrongHost).toBe(404);
+    const allowed = await fetch(new URL('/api/setup/status', address), { headers: { ...channel, origin: desktopOrigin } });
+    expect(await allowed.json()).toMatchObject({ state: 'unclaimed' });
+  } finally {
+    await server.close();
+  }
+});
+
+it('rejects desktop startup with a fixed port, hosted identity, or no native key', async () => {
+  const options = { dataDir, artifactDir, port: 0, desktop, management: { publicOrigin: desktopOrigin, loadVaultKey: nativeKey } };
+  await expect(startServer({ ...options, port: 3000 })).rejects.toThrow('Desktop runtime');
+  await expect(startServer({ ...options, container: true })).rejects.toThrow('Desktop runtime');
+  await expect(startServer({ ...options, identity: { configFile: 'unused', keyFile: 'unused' } })).rejects.toThrow('Desktop runtime');
+  await expect(startServer({ ...options, management: { publicOrigin: 'https://factory.example', loadVaultKey: nativeKey } }))
+    .rejects.toThrow('Desktop runtime');
+  await expect(startServer({ ...options, management: { publicOrigin: desktopOrigin } })).rejects.toThrow('Desktop runtime');
+  await expect(startServer({ ...options, desktop: { channelToken: 'too short' } })).rejects.toThrow('Desktop runtime');
 });
 
 it('requires an exact /data mount and private permissions for container storage', () => {
