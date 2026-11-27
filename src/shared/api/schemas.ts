@@ -1,7 +1,8 @@
 import Type, { type Static, type TSchema } from 'typebox';
 
-const object = <P extends Record<string, TSchema>>(properties: P) =>
+export const strictObject = <P extends Record<string, TSchema>>(properties: P) =>
   Type.Object(properties, { additionalProperties: false });
+const object = strictObject;
 const names = <const T extends readonly string[]>(...values: T) => Type.Enum(values);
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 export const opaqueIdSegment = '[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}';

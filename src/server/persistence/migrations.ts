@@ -6,18 +6,19 @@ interface Migration {
   sql: string;
 }
 
+const readMigration = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
+
 const migrations: readonly Migration[] = [
-  { version: 1, sql: readFileSync(new URL('./001-foundation.sql', import.meta.url), 'utf8') },
-  { version: 2, sql: readFileSync(new URL('./002-identity.sql', import.meta.url), 'utf8') },
-  { version: 3, sql: readFileSync(new URL('./003-repository-sync.sql', import.meta.url), 'utf8') },
+  { version: 1, sql: readMigration('./001-foundation.sql') },
+  { version: 2, sql: readMigration('./002-identity.sql') },
+  { version: 3, sql: readMigration('./003-repository-sync.sql') },
 ];
 
 const requiredTables = [
   'users', 'identities', 'repositories', 'repo_connections', 'repo_snapshots', 'tasks',
   'portal_sessions', 'oauth_intents', 'delegated_grants', 'connection_access', 'copilot_defaults', 'legacy_portal_claims',
-  'repository_sources', 'repository_rows', 'repository_sync',
 ];
-const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item', 'repository_sync_in_flight'];
+const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item'];
 
 export function hasCurrentSchema(db: SQLite.Database): boolean {
   if (!db.open || db.pragma('user_version', { simple: true }) !== migrations.length) return false;

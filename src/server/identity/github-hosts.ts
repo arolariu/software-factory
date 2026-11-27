@@ -1,24 +1,25 @@
-import { createHash } from 'node:crypto';
 import Type, { type Static } from 'typebox';
 import Value from 'typebox/value';
+import { strictObject } from '../../shared/api/schemas.js';
+import { sha256Hex } from '../digest.js';
 import { ApiFailure } from '../http/problems.js';
 import type { AuthorizationProvider } from '../http/portal-modules.js';
 
 const nonempty = Type.String({ minLength: 1 });
-const app = Type.Object({ id: nonempty, clientId: nonempty, secret: nonempty, scope: Type.Optional(nonempty) }, { additionalProperties: false });
-const profile = Type.Object({
+const app = strictObject({ id: nonempty, clientId: nonempty, secret: nonempty, scope: Type.Optional(nonempty) });
+const profile = strictObject({
   hostname: nonempty, label: nonempty,
-  registrations: Type.Object({
+  registrations: strictObject({
     portal: app, repository: Type.Optional(app), copilot: Type.Optional(app),
-  }, { additionalProperties: false }),
-}, { additionalProperties: false });
-const entra = Type.Object({
+  }),
+});
+const entra = strictObject({
   tenantId: Type.String({ pattern: '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$' }),
   registration: app,
-}, { additionalProperties: false });
-const config = Type.Object({
+});
+const config = strictObject({
   publicOrigin: nonempty, github: Type.Array(profile), azureDevOps: Type.Optional(entra),
-}, { additionalProperties: false });
+});
 
 type App = Static<typeof app>;
 export type GitHubHostProfile = Static<typeof profile>;
@@ -38,6 +39,12 @@ export interface Registration extends App {
 }
 export interface RepoTarget { host: string; scope: string; project: string | null; name: string }
 
+export const isGitHubName = (value: string) => /^[\w.-]+$/.test(value);
+export const storedProvider = (provider: AuthorizationProvider): IdentityProvider =>
+  provider === 'github' ? 'github' : 'azure_devops';
+export const apiProvider = (provider: IdentityProvider): AuthorizationProvider =>
+  provider === 'github' ? 'github' : 'azure-devops';
+
 export function createRegistry(hosts: readonly GitHubHostProfile[], azureDevOps?: Static<typeof entra>) {
   const entries = new Map<string, Registration>();
   const labels = new Map<string, string>();
@@ -47,7 +54,7 @@ export function createRegistry(hosts: readonly GitHubHostProfile[], azureDevOps?
     const appKey = JSON.stringify([options.issuer, spec.clientId]);
     if (appIds.has(appKey)) throw new Error('Authorization purposes require distinct app registrations.');
     appIds.add(appKey);
-    const binding = createHash('sha256').update(JSON.stringify([options, spec.id, spec.clientId])).digest('hex');
+    const binding = sha256Hex(JSON.stringify([options, spec.id, spec.clientId]));
     entries.set(`${options.hostId}:${options.purpose}`, { ...spec, ...options, binding });
   }
   for (const host of hosts) {
@@ -100,7 +107,7 @@ export function createRegistry(hosts: readonly GitHubHostProfile[], azureDevOps?
       if (!entries.has(`${hostId}:repository`)) throw new ApiFailure('INVALID_REQUEST');
       if (provider === 'github') {
         const [scope, name] = parts;
-        if (parts.length !== 2 || !scope || !name || !/^[\w.-]+$/.test(scope) || !/^[\w.-]+$/.test(name)) {
+        if (parts.length !== 2 || !scope || !name || !isGitHubName(scope) || !isGitHubName(name)) {
           throw new ApiFailure('INVALID_REQUEST');
         }
         return { hostId, target: { host, scope, project: null, name } };

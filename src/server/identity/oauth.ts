@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { ApiFailure } from '../http/problems.js';
+import { bearerHeaders, publicHttpsUrl, rateLimitFailure, record } from '../provider-http.js';
 import type { Tokens } from './credentials.js';
-import type { Registration, RepoTarget } from './github-hosts.js';
+import { isGitHubName, type Registration, type RepoTarget } from './github-hosts.js';
 
 export interface VerifiedRepository { id: string; host: string; scope: string; name: string; url: string }
 export interface VerifiedAuthorization {
@@ -37,11 +38,6 @@ export function authorizationUrl(registration: Registration, callback: string, s
   return url.href;
 }
 
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiFailure('PROVIDER_ERROR');
-  return value as Record<string, unknown>;
-}
-
 function string(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) throw new ApiFailure('PROVIDER_ERROR');
   return value;
@@ -54,9 +50,13 @@ function subject(value: unknown): string {
   return id;
 }
 
-function avatar(value: unknown): string | null {
-  if (typeof value !== 'string' || !/^https:\/\/[^\s/@\\?#]+(?:[/?#][^\s\\]*)?$/.test(value)) return null;
-  return value;
+const maxTokenLifetimeSeconds = 31_536_000;
+
+function lifetimeSeconds(expiry: unknown): number | undefined {
+  if (expiry === undefined) return undefined;
+  const seconds = typeof expiry === 'number' || typeof expiry === 'string' ? Number(expiry) : NaN;
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > maxTokenLifetimeSeconds) throw new ApiFailure('PROVIDER_ERROR');
+  return seconds;
 }
 
 export function createOAuthTransport(fetcher = fetch, now = Date.now) {
@@ -67,11 +67,8 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
     } catch {
       throw new ApiFailure('PROVIDER_ERROR');
     }
-    if (response.status === 429 || (response.status === 403 &&
-      (response.headers.has('retry-after') || response.headers.get('x-ratelimit-remaining') === '0'))) {
-      const retryAfter = Number(response.headers.get('retry-after') ?? NaN);
-      throw new ApiFailure('RATE_LIMITED', retryAfter);
-    }
+    const limited = rateLimitFailure(response);
+    if (limited) throw limited;
     if (response.status === 401 || response.status === 403) {
       throw new ApiFailure(isToken ? 'PROVIDER_ERROR' : 'ACCESS_DENIED');
     }
@@ -105,15 +102,11 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
         !accessToken.startsWith('ghu_') && !(registration.purpose === 'copilot' && accessToken.startsWith('gho_'))) {
       throw new ApiFailure('PROVIDER_ERROR');
     }
-    const expiry = payload['expires_in'];
-    const seconds = typeof expiry === 'number' || typeof expiry === 'string' ? Number(expiry) : NaN;
-    if (expiry !== undefined && (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 31536000)) {
-      throw new ApiFailure('PROVIDER_ERROR');
-    }
+    const seconds = lifetimeSeconds(payload['expires_in']);
     const refreshed = payload['refresh_token'];
     return {
       accessToken, refreshToken: refreshed === undefined ? previous?.refreshToken ?? null : string(refreshed),
-      expiresAt: expiry === undefined ? null : now() + seconds * 1_000,
+      expiresAt: seconds === undefined ? null : now() + seconds * 1_000,
     };
   }
 
@@ -130,56 +123,61 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
     throw new ApiFailure('ACCESS_UNVERIFIED');
   }
 
-  async function repository(registration: Registration, target: RepoTarget, headers: Headers): Promise<VerifiedRepository> {
-    const scope = encodeURIComponent(target.scope);
-    const name = encodeURIComponent(target.name);
-    if (registration.provider === 'github') {
-      const body = await request(`${registration.apiOrigin}/repos/${scope}/${name}`, { headers });
-      const owner = record(body['owner']);
-      const ownerName = string(owner['login']);
-      const repoName = string(body['name']);
-      if (!/^[\w.-]+$/.test(ownerName) || !/^[\w.-]+$/.test(repoName)) throw new ApiFailure('PROVIDER_ERROR');
-      const ownerId = subject(owner['id']);
-      const repoId = subject(body['id']);
-      const installation = await findInPages(registration.apiOrigin, '/user/installations', 'installations', headers,
-        (value) => subject(record(record(value)['account'])['id']) === ownerId);
-      if (installation === undefined) throw new ApiFailure('ACCESS_DENIED');
-      const installationRecord = record(installation);
-      const installedPermissions = record(installationRecord['permissions']);
-      if (!['issues', 'pull_requests'].every((permission) =>
-        installedPermissions[permission] === 'read' || installedPermissions[permission] === 'write')) {
-        throw new ApiFailure('ACCESS_DENIED');
-      }
-      const installationId = subject(installationRecord['id']);
-      const accessible = await findInPages(registration.apiOrigin, `/user/installations/${installationId}/repositories`, 'repositories', headers,
-        (value) => subject(record(value)['id']) === repoId);
-      if (accessible === undefined) throw new ApiFailure('ACCESS_DENIED');
-      return {
-        id: repoId, scope: ownerId, name: repoName, host: target.host,
-        url: `https://${target.host}/${encodeURIComponent(ownerName)}/${encodeURIComponent(repoName)}`,
-      };
-    }
-    const project = encodeURIComponent(target.project ?? '');
-    const body = await request(`${registration.apiOrigin}/${scope}/${project}/_apis/git/repositories/${name}?api-version=7.1`, { headers });
-    const projectRecord = record(body['project']);
+  async function githubRepository(registration: Registration, target: RepoTarget, headers: Headers): Promise<VerifiedRepository> {
+    const body = await request(
+      `${registration.apiOrigin}/repos/${encodeURIComponent(target.scope)}/${encodeURIComponent(target.name)}`, { headers },
+    );
+    const owner = record(body['owner']);
+    const ownerName = string(owner['login']);
     const repoName = string(body['name']);
+    if (!isGitHubName(ownerName) || !isGitHubName(repoName)) throw new ApiFailure('PROVIDER_ERROR');
+    const ownerId = subject(owner['id']);
+    const repoId = subject(body['id']);
+    const installation = await findInPages(registration.apiOrigin, '/user/installations', 'installations', headers,
+      (value) => subject(record(record(value)['account'])['id']) === ownerId);
+    if (installation === undefined) throw new ApiFailure('ACCESS_DENIED');
+    const installationRecord = record(installation);
+    const installedPermissions = record(installationRecord['permissions']);
+    if (!['issues', 'pull_requests'].every((permission) =>
+      installedPermissions[permission] === 'read' || installedPermissions[permission] === 'write')) {
+      throw new ApiFailure('ACCESS_DENIED');
+    }
+    const installationId = subject(installationRecord['id']);
+    const accessible = await findInPages(registration.apiOrigin, `/user/installations/${installationId}/repositories`, 'repositories', headers,
+      (value) => subject(record(value)['id']) === repoId);
+    if (accessible === undefined) throw new ApiFailure('ACCESS_DENIED');
     return {
-      id: subject(body['id']), scope: subject(projectRecord['id']), name: repoName,
-      host: target.host, url: `${registration.apiOrigin}/${scope}/${encodeURIComponent(string(projectRecord['name']))}/_git/${encodeURIComponent(repoName)}`,
+      id: repoId, scope: ownerId, name: repoName, host: target.host,
+      url: `https://${target.host}/${encodeURIComponent(ownerName)}/${encodeURIComponent(repoName)}`,
     };
   }
 
+  async function azureRepository(registration: Registration, target: RepoTarget, headers: Headers): Promise<VerifiedRepository> {
+    const scope = encodeURIComponent(target.scope);
+    const project = encodeURIComponent(target.project ?? '');
+    const body = await request(
+      `${registration.apiOrigin}/${scope}/${project}/_apis/git/repositories/${encodeURIComponent(target.name)}?api-version=7.1`, { headers },
+    );
+    const projectRecord = record(body['project']);
+    const repoName = string(body['name']);
+    return {
+      id: subject(body['id']), scope: subject(projectRecord['id']), name: repoName, host: target.host,
+      url: `${registration.apiOrigin}/${scope}/${encodeURIComponent(string(projectRecord['name']))}/_git/${encodeURIComponent(repoName)}`,
+    };
+  }
+
+  const repository = (registration: Registration, target: RepoTarget, headers: Headers) =>
+    registration.provider === 'github' ? githubRepository(registration, target, headers) : azureRepository(registration, target, headers);
+
   return {
     verifyRepository(registration: Registration, target: RepoTarget, accessToken: string) {
-      return repository(registration, target, {
-        Accept: 'application/json', Authorization: `Bearer ${accessToken}`, 'User-Agent': 'software-factory',
-      });
+      return repository(registration, target, bearerHeaders(accessToken));
     },
     async redeem({ registration, callback, code, verifier, target }: Redemption): Promise<VerifiedAuthorization> {
       const tokens = await exchange(registration, {
         grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: callback,
       });
-      const headers = { Accept: 'application/json', Authorization: `Bearer ${tokens.accessToken}`, 'User-Agent': 'software-factory' };
+      const headers = bearerHeaders(tokens.accessToken);
       const person = await request(registration.profileUrl, { headers });
       const label = registration.provider === 'github'
         ? person['name'] || person['login'] : person['displayName'];
@@ -191,7 +189,7 @@ export function createOAuthTransport(fetcher = fetch, now = Date.now) {
         throw error;
       });
       return {
-        subject: account, label: string(label), avatarUrl: avatar(person['avatar_url']), tokens,
+        subject: account, label: string(label), avatarUrl: publicHttpsUrl(person['avatar_url']), tokens,
         ...(repo && { repo }),
       };
     },
