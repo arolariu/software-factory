@@ -2,12 +2,14 @@ import cookiePlugin from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
 import type { TSchema } from 'typebox';
 import Value from 'typebox/value';
-import { ApiSchemas as s, opaqueIdSegment, type ApiDto } from '../../shared/api/schemas.js';
+import { ApiSchemas as s, type ApiDto } from '../../shared/api/schemas.js';
+import { isPortalPath } from './navigation.js';
 import type { GatedEffect, PortalModules, PortalOptions, Requester } from './portal-modules.js';
 import { ApiFailure, sendProblem } from './problems.js';
 
 const cookieName = 'factory_session';
 const cookieOptions = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' } as const;
+const sessionIdPattern = /^[A-Za-z0-9_-]{1,256}$/;
 const noStore = (reply: FastifyReply) => reply.header('Cache-Control', 'no-store');
 
 type Request<P, Q, B> = FastifyRequest<{ Params: P; Querystring: Q; Body: B }>;
@@ -15,33 +17,30 @@ type Part = keyof typeof s;
 type Parsed<K> = K extends Part ? ApiDto<K> : unknown;
 type Parts<P, Q, B> = { params?: P; querystring?: Q; body?: B };
 
-function json(reply: FastifyReply, schema: TSchema, output: unknown) {
+function validated<T>(schema: TSchema, output: unknown): T {
   if (!Value.Check(schema, output)) throw new ApiFailure('INTERNAL_ERROR');
-  return reply.send(output);
+  return output as T;
+}
+
+function json(reply: FastifyReply, schema: TSchema, output: unknown) {
+  return reply.send(validated(schema, output));
 }
 
 function accepted(reply: FastifyReply, kind: 'tasks' | 'operations', result: unknown) {
-  const schema = kind === 'tasks' ? s.taskAccepted : s.operationAccepted;
-  if (!Value.Check(schema, result)) throw new ApiFailure('INTERNAL_ERROR');
-  const id = 'taskId' in result ? result.taskId : result.operationId;
-  return reply.header('Location', `/api/${kind}/${encodeURIComponent(id)}`).code(202).send(result);
+  const body = validated<ApiDto<'taskAccepted'> | ApiDto<'operationAccepted'>>(
+    kind === 'tasks' ? s.taskAccepted : s.operationAccepted, result);
+  const id = 'taskId' in body ? body.taskId : body.operationId;
+  return reply.header('Location', `/api/${kind}/${encodeURIComponent(id)}`).code(202).send(body);
 }
 
 function sessionId(request: FastifyRequest): string | undefined {
   const cookie = request.cookies[cookieName];
-  return cookie && /^[A-Za-z0-9_-]{1,256}$/.test(cookie) ? cookie : undefined;
+  return cookie && sessionIdPattern.test(cookie) ? cookie : undefined;
 }
 
 function setSession(reply: FastifyReply, session: string) {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(session)) throw new ApiFailure('INTERNAL_ERROR');
+  if (!sessionIdPattern.test(session)) throw new ApiFailure('INTERNAL_ERROR');
   reply.setCookie(cookieName, session, cookieOptions);
-}
-
-const portalPath = new RegExp(
-  `^/(?:connections(?:/${opaqueIdSegment}(?:/(?:issues|pull-requests|tasks))?)?|settings(?:/(?:factory|copilot|repository))?|active-sessions|statistics)?$`,
-);
-export function isPortalPath(path: string): boolean {
-  return !/[\r\n]/.test(path) && portalPath.test(path);
 }
 
 export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptions): void {
