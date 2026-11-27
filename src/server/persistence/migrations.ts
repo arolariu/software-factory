@@ -6,12 +6,14 @@ interface Migration {
   sql: string;
 }
 
+const readMigration = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
+
 const migrations: readonly Migration[] = [
-  { version: 1, sql: readFileSync(new URL('./001-foundation.sql', import.meta.url), 'utf8') },
-  { version: 2, sql: readFileSync(new URL('./002-identity.sql', import.meta.url), 'utf8') },
-  { version: 3, sql: readFileSync(new URL('./003-repository-sync.sql', import.meta.url), 'utf8') },
-  { version: 4, sql: readFileSync(new URL('./004-management.sql', import.meta.url), 'utf8') },
-  { version: 5, sql: readFileSync(new URL('./005-management-authorization.sql', import.meta.url), 'utf8') },
+  { version: 1, sql: readMigration('./001-foundation.sql') },
+  { version: 2, sql: readMigration('./002-identity.sql') },
+  { version: 3, sql: readMigration('./003-repository-sync.sql') },
+  { version: 4, sql: readMigration('./004-management.sql') },
+  { version: 5, sql: readMigration('./005-management-authorization.sql') },
 ];
 
 const requiredTables = [

@@ -7,6 +7,8 @@ export interface Tokens {
   expiresAt: number | null;
 }
 
+const aad = (ref: string, binding: string) => Buffer.from(JSON.stringify([ref, binding]));
+
 export function openCredentialVault(path: string, material: Uint8Array) {
   if (material.byteLength !== 32) throw new Error('Credential encryption requires a 32-byte key.');
   const key = Buffer.from(material);
@@ -38,7 +40,7 @@ export function openCredentialVault(path: string, material: Uint8Array) {
       const ref = randomUUID();
       const nonce = randomBytes(12);
       const cipher = createCipheriv('aes-256-gcm', key, nonce);
-      cipher.setAAD(Buffer.from(JSON.stringify([ref, binding])));
+      cipher.setAAD(aad(ref, binding));
       const ciphertext = Buffer.concat([cipher.update(JSON.stringify(tokens), 'utf8'), cipher.final()]);
       db.prepare('INSERT INTO credential_entries VALUES (?, ?, ?, ?)').run(ref, nonce, cipher.getAuthTag(), ciphertext);
       return ref;
@@ -49,7 +51,7 @@ export function openCredentialVault(path: string, material: Uint8Array) {
       ).get(ref);
       if (!row) return null;
       const decipher = createDecipheriv('aes-256-gcm', key, row.nonce);
-      decipher.setAAD(Buffer.from(JSON.stringify([ref, binding])));
+      decipher.setAAD(aad(ref, binding));
       decipher.setAuthTag(row.tag);
       return JSON.parse(Buffer.concat([decipher.update(row.ciphertext), decipher.final()]).toString('utf8')) as T;
     },

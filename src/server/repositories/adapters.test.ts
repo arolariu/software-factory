@@ -150,6 +150,38 @@ it('normalizes Azure pull requests, work item detail and the next opaque comment
   expect(fetcher.mock.calls[3]?.[0]).toContain('continuationToken=opaque%2Bcursor');
 });
 
+it('maps every Azure pull request status and tolerates a missing merge commit', async () => {
+  const base = { title: 'PR', sourceRefName: 'refs/heads/work', targetRefName: 'refs/heads/main', createdBy: other };
+  const { client } = adapter([Response.json({ value: [
+    { ...base, pullRequestId: 1, status: 'active', isDraft: true, lastMergeSourceCommit: { commitId: 'c1' } },
+    { ...base, pullRequestId: 2, status: 'abandoned', createdBy: null },
+    { ...base, pullRequestId: 3, status: 'completed' },
+  ] })], ado);
+  const pulls = await client.pullRequests();
+  expect(pulls.map(({ state, draft, origin }) => [state, draft, origin])).toEqual([
+    ['active', true, 'other'], ['closed', false, 'unknown'], ['merged', false, 'other'],
+  ]);
+  expect(pulls.map(({ checks }) => checks?.headRevision ?? null)).toEqual(['c1', null, null]);
+  await expect(adapter([Response.json({ value: [{ ...base, pullRequestId: 4, status: 'all' }] })], ado).client.pullRequests())
+    .rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+});
+
+it('handles empty Azure Boards results, unknown state names, first comment pages and stale pull request heads', async () => {
+  expect(await adapter([Response.json({ workItems: [] })], ado).client.issues()).toEqual([]);
+  await expect(adapter([
+    Response.json(workItem), Response.json({ value: [{ name: 'Other', category: 'Proposed' }] }),
+  ], ado).client.issue('221', 10, null)).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+  const { client, fetcher } = adapter([
+    Response.json(workItem),
+    Response.json({ value: [{ name: 'Custom Complete', category: 'Completed' }] }),
+    Response.json({ comments: [] }),
+  ], ado);
+  expect((await client.issue('221', 10, null)).comments).toEqual({ items: [], nextCursor: null });
+  expect(fetcher.mock.calls[2]?.[0]).not.toContain('continuationToken');
+  await expect(adapter([Response.json({ lastMergeSourceCommit: { commitId: 'new' } })], ado).client.checks('12', 'old'))
+    .rejects.toMatchObject({ code: 'PR_REVISION_CHANGED' });
+});
+
 it('invalidates a changed head and merges check runs with the latest status in each context', async () => {
   const head = Response.json({ head: { sha: 'head-2' } });
   await expect(adapter([head]).client.checks('12', 'head-1')).rejects.toMatchObject({ code: 'PR_REVISION_CHANGED' });

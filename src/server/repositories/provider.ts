@@ -1,12 +1,12 @@
 import type { ApiDto } from '../../shared/api/schemas.js';
-import type { RepoTarget } from '../identity/github-hosts.js';
+import type { IdentityProvider, RepoTarget } from '../identity/github-hosts.js';
 
 export interface RepositoryAccess {
   id: string;
   repoId: string;
   generation: number;
   grantId: string;
-  provider: 'github' | 'azure_devops';
+  provider: IdentityProvider;
   repositoryId: string;
   scope: string;
   target: RepoTarget;

@@ -1,50 +1,19 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type SQLite from 'better-sqlite3';
 import type { ApiDto, AuthorizationIntent } from '../../shared/api/schemas.js';
+import { sha256Hex } from '../digest.js';
 import { ApiFailure } from '../http/problems.js';
 import type { AuthorizationProvider, PortalModules, Requester } from '../http/portal-modules.js';
 import type { CredentialVault, Tokens } from './credentials.js';
-import type { Purpose, Registration, Registry, RepoTarget } from './github-hosts.js';
-import { authorizationUrl, RepositoryAuthorizationDenied, type createOAuthTransport, type VerifiedAuthorization, type VerifiedRepository } from './oauth.js';
+import { apiProvider, type Registration, type Registry, type RepoTarget } from './github-hosts.js';
+import { authorizationUrl, RepositoryAuthorizationDenied, type createOAuthTransport, type VerifiedAuthorization } from './oauth.js';
 import type { RepositoryAccess } from '../repositories/provider.js';
+import {
+  destination, fifteenMinutes, purposeOf, token, vaultBinding,
+  type Grant, type Intent, type Pending, type Person,
+} from './records.js';
+import { createIdentityStore } from './store.js';
 
-const fifteenMinutes = 900_000;
-const sessionAge = 28_800_000;
-const token = () => randomBytes(32).toString('base64url');
-const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const purposeOf = (intent: AuthorizationIntent): Purpose =>
-  intent.intent === 'sign_in' ? 'portal' :
-    intent.intent === 'link_copilot' || intent.intent === 'reconnect_copilot' ? 'copilot' : 'repository';
-const destination = { portal: '/', copilot: '/settings/copilot', repository: '/settings/repository' } as const;
-const connectionQuery = `
-  SELECT c.id, c.repo_id, c.identity_id, c.generation, r.canonical_host, r.provider,
-         r.provider_repo_id, r.provider_scope, r.canonical_url, r.name, i.display_name, i.subject,
-         a.grant_id, a.generation AS verified_generation, a.access_verified_at, a.denied_at
-  FROM repo_connections c JOIN repositories r ON r.id = c.repo_id
-  JOIN identities i ON i.id = c.identity_id LEFT JOIN connection_access a ON a.connection_id = c.id
-  WHERE c.user_id = ? AND c.retired_at IS NULL`;
-interface Connection {
-  id: string; repo_id: string; identity_id: string; generation: number; canonical_host: string;
-  provider: 'github' | 'azure_devops'; provider_repo_id: string; provider_scope: string;
-  canonical_url: string; name: string; display_name: string; subject: string; grant_id: string | null;
-  verified_generation: number | null; access_verified_at: number | null; denied_at: number | null;
-}
-interface Person {
-  id: string; user_id: string; issuer: string; subject: string;
-  provider: 'github' | 'azure_devops'; display_name: string; avatar_url: string | null;
-}
-interface Session {
-  user_id: string | null; identity_id: string | null; csrf_token: string;
-  host_id: string | null; registration_binding: string | null;
-}
-interface Grant {
-  id: string; host_id: string; purpose: Purpose; identity_id: string; user_id: string;
-  registration_binding: string; credential_ref: string; revoked_at: number | null; superseded_by: string | null;
-}
-export interface Intent {
-  intent: AuthorizationIntent; target: RepoTarget | null; connection: { id: string; generation: number } | null;
-}
-interface Pending { host_id: string; registration_binding: string; intent_json: string; verifier: string }
 type Transport = Pick<ReturnType<typeof createOAuthTransport>, 'redeem' | 'refresh'>;
 interface Options extends Transport {
   db: SQLite.Database;
@@ -53,50 +22,12 @@ interface Options extends Transport {
   registry: Registry;
   now?: () => number;
 }
-const vaultBinding = (grant: Omit<Grant, 'credential_ref' | 'revoked_at' | 'superseded_by'>) => JSON.stringify([
-  grant.user_id, grant.purpose, grant.host_id, grant.identity_id, grant.registration_binding, grant.id,
-]);
 
 export function createIdentity({ db, vault, origin, registry, redeem, refresh, now = Date.now }: Options) {
   const inFlight = new Map<string, Promise<Tokens>>();
-  function getSessionByHash(sessionHash: string) {
-    const row = db.prepare<[string, number], Session>(`SELECT s.* FROM portal_sessions s
-      WHERE session_hash=? AND expires_at>? AND (user_id IS NULL OR EXISTS (
-        SELECT 1 FROM delegated_grants g WHERE g.user_id=s.user_id AND g.identity_id=s.identity_id
-          AND g.purpose='portal' AND g.registration_binding=s.registration_binding AND g.revoked_at IS NULL
-      ))`).get(sessionHash, now());
-    if (row?.host_id && !registry.bound(row.host_id, 'portal', row.registration_binding ?? '')) return undefined;
-    return row;
-  }
-  const getSession = (id: string) => getSessionByHash(hash(id));
-  const getGrant = (id: string, owner: string) => db.prepare<[string, string], Grant>(
-    'SELECT * FROM delegated_grants WHERE id = ? AND user_id = ?',
-  ).get(id, owner);
-  const getConnection = (id: string, owner: string) => db.prepare<[string, string], Connection>(
-    `${connectionQuery} AND c.id = ?`,
-  ).get(owner, id);
-  const bound = (grant: Grant) => registry.bound(grant.host_id, grant.purpose, grant.registration_binding);
+  const store = createIdentityStore({ db, registry, now });
+  const { getSession, getGrant, getConnection, bound } = store;
   const callbackUrl = (provider: AuthorizationProvider) => `${origin}/auth/${provider}/callback`;
-
-  function createSession(owner: string | null, person: string | null, registration?: Registration) {
-    const id = token();
-    const csrfToken = token();
-    db.prepare('DELETE FROM portal_sessions WHERE expires_at <= ?').run(now());
-    db.prepare('INSERT INTO portal_sessions VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(hash(id), csrfToken, owner, person, registration?.hostId ?? null, registration?.binding ?? null,
-        now() + (owner === null ? fifteenMinutes : sessionAge));
-    return { sessionId: id, csrfToken };
-  }
-
-  function readGrant(connectionId: string, requester: Requester, at = now()): 'valid' | 'denied' | 'unverified' {
-    const connection = getConnection(connectionId, requester.id);
-    if (!connection || connection.denied_at !== null) return 'denied';
-    const grant = connection.grant_id ? getGrant(connection.grant_id, requester.id) : undefined;
-    if (!grant || grant.purpose !== 'repository' || !bound(grant) || grant.revoked_at !== null) return 'denied';
-    if (connection.verified_generation !== connection.generation ||
-        connection.access_verified_at === null || at < connection.access_verified_at) return 'unverified';
-    return at - connection.access_verified_at < fifteenMinutes ? 'valid' : 'unverified';
-  }
 
   function selectAuthorization(
     provider: AuthorizationProvider, intent: AuthorizationIntent, sessionId: string, requester: Requester | null,
@@ -121,9 +52,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       target = selection.target;
       const { host, scope, project, name } = target;
       const repoPath = [scope, ...(project === null ? [] : [project, '_git']), name].map(encodeURIComponent).join('/');
-      const existing = reconnect ?? db.prepare<[string, string, string], Connection>(
-        `${connectionQuery} AND r.provider = ? AND r.canonical_url = ? COLLATE NOCASE`,
-      ).get(owner ?? '', provider === 'azure-devops' ? 'azure_devops' : provider, `https://${host}/${repoPath}`);
+      const existing = reconnect ?? store.findConnection(owner ?? '', provider, `https://${host}/${repoPath}`);
       if (existing) connection = { id: existing.id, generation: existing.generation };
     }
     const registration = registry.registration(hostId, purpose);
@@ -140,63 +69,9 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     const verifier = token();
     db.prepare('DELETE FROM oauth_intents WHERE expires_at <= ?').run(now());
     db.prepare('INSERT INTO oauth_intents VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(hash(state), hash(sessionId), provider, registration.hostId, registration.binding,
+      .run(sha256Hex(state), sha256Hex(sessionId), provider, registration.hostId, registration.binding,
         JSON.stringify(pending), verifier, now() + fifteenMinutes);
     return { authorizationUrl: authorizationUrl(registration, callbackUrl(provider), state, verifier) };
-  }
-
-  function persistPerson(owner: string | null, registration: Registration, proof: VerifiedAuthorization): Person {
-    const provider = registration.provider === 'github' ? 'github' : 'azure_devops';
-    // Delegated accounts do not become portal sign-in identities merely by being linked.
-    const issuer = registration.purpose === 'portal' ? `portal:${registration.issuer}` : registration.issuer;
-    const current = db.prepare<[string, string, string], Person>(
-      'SELECT * FROM identities WHERE provider = ? AND issuer = ? AND subject = ?',
-    ).get(provider, issuer, proof.subject);
-    if (current && owner !== null && current.user_id !== owner) throw new ApiFailure('CONNECTION_ACCOUNT_CONFLICT');
-    const legacy = registration.purpose === 'portal' && !current ? db.prepare<[string, string], { id: string; user_id: string }>(`
-      SELECT i.id,i.user_id FROM legacy_portal_claims c JOIN identities i ON i.id=c.identity_id
-      WHERE i.provider='github' AND i.issuer=? AND i.subject=?`).get(registration.issuer, proof.subject) : undefined;
-    const userId = current?.user_id ?? owner ?? legacy?.user_id ?? randomUUID();
-    if (!current && owner === null && !legacy) db.prepare('INSERT INTO users VALUES (?)').run(userId);
-    if (legacy) db.prepare('DELETE FROM legacy_portal_claims WHERE identity_id=?').run(legacy.id);
-    const id = current?.id ?? randomUUID();
-    db.prepare(`INSERT INTO identities (id,user_id,provider,issuer,subject,display_name,avatar_url) VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name, avatar_url=excluded.avatar_url`)
-      .run(id, userId, provider, issuer, proof.subject, proof.label, proof.avatarUrl);
-    return { id, user_id: userId, provider, issuer, subject: proof.subject, display_name: proof.label, avatar_url: proof.avatarUrl };
-  }
-
-  function persistConnection(person: Person, registration: Registration, pending: Intent, repo: VerifiedRepository, grantId: string) {
-    const original = pending.connection && getConnection(pending.connection.id, person.user_id);
-    if (pending.connection && (!original || original.generation !== pending.connection.generation ||
-        original.identity_id !== person.id || original.canonical_host !== repo.host ||
-        original.provider_repo_id !== repo.id || original.provider_scope !== repo.scope)) {
-      throw new ApiFailure('CONNECTION_ACCOUNT_CONFLICT');
-    }
-    const canonical = registry.repository(repo.url, registration.provider);
-    if (repo.host !== pending.target?.host || canonical.hostId !== registration.hostId) throw new ApiFailure('PROVIDER_ERROR');
-    db.prepare(`INSERT INTO repositories (id,provider,canonical_host,provider_scope,provider_repo_id,canonical_url,name)
-      VALUES (?,?,?,?,?,?,?) ON CONFLICT(provider,canonical_host,provider_scope,provider_repo_id)
-      DO UPDATE SET canonical_url=excluded.canonical_url, name=excluded.name`)
-      .run(randomUUID(), person.provider, repo.host, repo.scope, repo.id, repo.url, repo.name);
-    const row = db.prepare<[string, string, string, string], { id: string }>(
-      'SELECT id FROM repositories WHERE provider=? AND canonical_host=? AND provider_scope=? AND provider_repo_id=?',
-    ).get(person.provider, repo.host, repo.scope, repo.id);
-    if (!row) throw new ApiFailure('INTERNAL_ERROR');
-    const existing = db.prepare<[string, string], { id: string; generation: number }>(
-      'SELECT id, generation FROM repo_connections WHERE user_id=? AND repo_id=? AND retired_at IS NULL',
-    ).get(person.user_id, row.id);
-    if (existing?.id !== pending.connection?.id) throw new ApiFailure('CONNECTION_ACCOUNT_CONFLICT');
-    const id = existing?.id ?? randomUUID();
-    const generation = existing ? existing.generation + 1 : 1;
-    if (!existing) db.prepare('INSERT INTO repo_connections (id,repo_id,user_id,identity_id,connected_at) VALUES (?,?,?,?,?)')
-      .run(id, row.id, person.user_id, person.id, now());
-    else db.prepare('UPDATE repo_connections SET generation=? WHERE id=?').run(generation, id);
-    db.prepare(`INSERT INTO connection_access
-      (connection_id,repo_id,user_id,identity_id,grant_id,generation,access_verified_at,denied_at)
-      VALUES (?,?,?,?,?,?,?,NULL) ON CONFLICT(connection_id)
-      DO UPDATE SET grant_id=excluded.grant_id,generation=excluded.generation,access_verified_at=excluded.access_verified_at,denied_at=NULL`)
-      .run(id, row.id, person.user_id, person.id, grantId, generation, now());
   }
 
   async function completeAuthorization(provider: AuthorizationProvider, sessionId: string, input: { state: string; code: string | null }) {
@@ -205,7 +80,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     const pending = db.prepare<[string, string, string, number], Pending>(`DELETE FROM oauth_intents
       WHERE state_hash=? AND session_hash=? AND provider=? AND expires_at>?
       RETURNING host_id, registration_binding, intent_json, verifier`)
-      .get(hash(input.state), hash(sessionId), provider, now());
+      .get(sha256Hex(input.state), sha256Hex(sessionId), provider, now());
     if (!pending) throw new ApiFailure('INVALID_REQUEST');
     const intent = JSON.parse(pending.intent_json) as Intent;
     const purpose = purposeOf(intent.intent);
@@ -215,9 +90,8 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     const proof = await redeem({
       registration, callback: callbackUrl(provider), code: input.code, verifier: pending.verifier, target: intent.target,
     }).catch((error: unknown) => {
-      if (error instanceof RepositoryAuthorizationDenied && intent.connection && session.user_id && getSession(sessionId)) {
-        const original = getConnection(intent.connection.id, session.user_id);
-        if (original?.subject === error.subject) markConnectionDenied(original.id, { id: session.user_id }, intent.connection.generation);
+      if (error instanceof RepositoryAuthorizationDenied && session.user_id && getSession(sessionId)) {
+        store.recordRepositoryDenial({ id: session.user_id }, intent, error.subject);
       }
       throw error;
     });
@@ -238,7 +112,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     try {
       result = db.transaction(() => {
         authorize?.();
-        const person = persistPerson(purpose === 'portal' ? null : session.user_id, registration, proof);
+        const person = store.persistPerson(purpose === 'portal' ? null : session.user_id, registration, proof);
         const old = db.prepare<[string, string, string, string], Grant>(
           'SELECT * FROM delegated_grants WHERE user_id=? AND identity_id=? AND purpose=? AND registration_binding=?',
         ).get(person.user_id, person.id, purpose, registration.binding);
@@ -253,7 +127,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
         };
         if (purpose === 'repository') {
           if (!proof.repo) throw new ApiFailure('PROVIDER_ERROR');
-          if (old) persistConnection(person, registration, intent, proof.repo, old.id);
+          if (old) store.persistConnection(person, registration, intent, proof.repo, old.id);
         }
         newRef = vault.put(vaultBinding(grant), proof.tokens);
         previousRef = old?.credential_ref;
@@ -261,7 +135,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
           (id,user_id,identity_id,host_id,purpose,registration_binding,credential_ref,revoked_at) VALUES (?,?,?,?,?,?,?,NULL)
           ON CONFLICT(id) DO UPDATE SET credential_ref=excluded.credential_ref,revoked_at=NULL,superseded_by=NULL`)
           .run(grant.id, grant.user_id, grant.identity_id, grant.host_id, grant.purpose, grant.registration_binding, newRef);
-        if (purpose === 'repository' && proof.repo && !old) persistConnection(person, registration, intent, proof.repo, grant.id);
+        if (purpose === 'repository' && proof.repo && !old) store.persistConnection(person, registration, intent, proof.repo, grant.id);
         if (previousAccount && previousAccount.id !== grant.id) {
           db.prepare('UPDATE delegated_grants SET superseded_by=?,revoked_at=? WHERE id=?')
             .run(grant.id, now(), previousAccount.id);
@@ -270,8 +144,8 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
           supersededRef = previousAccount.credential_ref;
         }
         if (purpose !== 'portal') return { redirectTo: destination[purpose] };
-        db.prepare('DELETE FROM portal_sessions WHERE session_hash=?').run(hash(sessionId));
-        return { redirectTo: '/', sessionId: createSession(person.user_id, person.id, registration).sessionId };
+        db.prepare('DELETE FROM portal_sessions WHERE session_hash=?').run(sha256Hex(sessionId));
+        return { redirectTo: '/', sessionId: store.createSession(person.user_id, person.id, registration).sessionId };
       }).immediate();
     } catch (error) {
       if (newRef) vault.delete(newRef);
@@ -331,17 +205,17 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     },
     csrf(sessionId: string | undefined): { csrfToken: string; sessionId?: string } {
       const session = sessionId ? getSession(sessionId) : undefined;
-      return session ? { csrfToken: session.csrf_token } : createSession(null, null);
+      return session ? { csrfToken: session.csrf_token } : store.createSession(null, null);
     },
     verifyCsrf(sessionId: string, csrf: string) {
       const session = getSession(sessionId);
-      return !!session && timingSafeEqual(Buffer.from(hash(csrf)), Buffer.from(hash(session.csrf_token)));
+      return !!session && timingSafeEqual(Buffer.from(sha256Hex(csrf)), Buffer.from(sha256Hex(session.csrf_token)));
     },
     githubHosts: registry.githubHosts,
     beginAuthorization,
     completeAuthorization,
     logout(requester: Requester, sessionId: string): void {
-      db.prepare('DELETE FROM portal_sessions WHERE user_id=? AND session_hash=?').run(requester.id, hash(sessionId));
+      db.prepare('DELETE FROM portal_sessions WHERE user_id=? AND session_hash=?').run(requester.id, sha256Hex(sessionId));
     },
     me(requester: Requester): ApiDto<'me'> {
       const person = db.prepare<[string], Person>("SELECT * FROM identities WHERE user_id=? AND issuer LIKE 'portal:%'").get(requester.id);
@@ -382,64 +256,38 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     },
   } satisfies PortalModules['identity'];
 
-  function markConnectionDenied(connectionId: string, requester: Requester, generation: number): boolean {
-    return db.prepare(`UPDATE connection_access SET denied_at=? WHERE connection_id=? AND user_id=? AND generation=?
-      AND EXISTS (SELECT 1 FROM repo_connections c WHERE c.id=connection_id AND c.retired_at IS NULL AND c.generation=?)`)
-      .run(now(), connectionId, requester.id, generation, generation).changes === 1;
-  }
-
   return {
     ...identity,
-    readGrant,
+    readGrant: store.readGrant,
     readTokens,
     selectAuthorization,
     persistAuthorization,
     isRequesterSession(sessionHash: string, requester: Requester): boolean {
-      return getSessionByHash(sessionHash)?.user_id === requester.id;
+      return store.getSessionByHash(sessionHash)?.user_id === requester.id;
     },
-    recordRepositoryDenial(requester: Requester, intent: Intent, subject: string): void {
-      if (!intent.connection) return;
-      const original = getConnection(intent.connection.id, requester.id);
-      if (original?.subject === subject) markConnectionDenied(original.id, requester, intent.connection.generation);
-    },
-    disconnectRepository(connectionId: string, requester: Requester): void {
-      db.transaction(() => {
-        const original = getConnection(connectionId, requester.id);
-        if (!original) throw new ApiFailure('NOT_FOUND');
-        markConnectionDenied(connectionId, requester, original.generation);
-        db.prepare('UPDATE repo_connections SET generation=generation+1 WHERE id=? AND user_id=?')
-          .run(connectionId, requester.id);
-        db.prepare('UPDATE connection_access SET access_verified_at=NULL WHERE connection_id=? AND user_id=?')
-          .run(connectionId, requester.id);
-      }).immediate();
-    },
+    recordRepositoryDenial: store.recordRepositoryDenial,
+    disconnectRepository: store.disconnectRepository,
     repositoryContext(connectionId: string, requester: Requester): RepositoryAccess | undefined {
       const row = getConnection(connectionId, requester.id);
       if (!row?.grant_id) return undefined;
       const grant = getGrant(row.grant_id, requester.id);
       if (!grant || !bound(grant)) throw new ApiFailure('ACCESS_DENIED');
-      const providerName = row.provider === 'github' ? 'github' : 'azure-devops';
-      const { target } = registry.repository(row.canonical_url, providerName);
+      const { target } = registry.repository(row.canonical_url, apiProvider(row.provider));
       return {
         id: row.id, repoId: row.repo_id, grantId: row.grant_id, generation: row.generation, provider: row.provider,
         repositoryId: row.provider_repo_id, scope: row.provider_scope, target, subject: row.subject,
       };
     },
-    markConnectionVerified(connectionId: string, requester: Requester, generation: number): void {
-      db.prepare(`UPDATE connection_access SET access_verified_at=?
-        WHERE connection_id=? AND user_id=? AND generation=? AND denied_at IS NULL
-        AND EXISTS (SELECT 1 FROM repo_connections c WHERE c.id=connection_id AND c.retired_at IS NULL AND c.generation=?)`)
-        .run(now(), connectionId, requester.id, generation, generation);
-    },
+    markConnectionVerified: store.markConnectionVerified,
     connections(requester: Requester): ApiDto<'connections'> {
       return {
-        items: db.prepare<[string], Connection>(`${connectionQuery} ORDER BY r.name,c.id`).all(requester.id).map((row) => ({
+        items: store.listConnections(requester.id).map((row) => ({
           id: row.id, repoId: row.repo_id, name: row.name || row.canonical_url, provider: row.provider, host: row.canonical_host,
           repositoryUrl: row.canonical_url, accountLabel: row.display_name || row.identity_id,
-          state: readGrant(row.id, requester) === 'denied' ? 'needs_auth' : 'connected',
+          state: store.readGrant(row.id, requester) === 'denied' ? 'needs_auth' : 'connected',
         })),
       };
     },
-    markConnectionDenied,
+    markConnectionDenied: store.markConnectionDenied,
   };
 }

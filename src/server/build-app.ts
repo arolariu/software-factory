@@ -2,12 +2,13 @@ import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import fastifyStatic from '@fastify/static';
 import type SQLite from 'better-sqlite3';
-import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import { ApiSchemas } from '../shared/api/schemas.js';
+import { isApiPath, isPageNavigation } from './http/navigation.js';
 import type { PortalOptions } from './http/portal-modules.js';
 import { ApiFailure, sendProblem } from './http/problems.js';
-import { isPortalPath, registerPortalRoutes } from './http/routes.js';
 import { registerManagementRoutes, type ManagementRoutes } from './http/management-routes.js';
+import { registerPortalRoutes } from './http/routes.js';
 import { hasCurrentSchema } from './persistence/migrations.js';
 
 export interface BuildMetadata {
@@ -24,41 +25,6 @@ export interface BuildAppOptions {
   logger?: boolean;
   portal?: PortalOptions;
   management?: ManagementRoutes;
-}
-
-function pathSegments(target: string): string[] {
-  const path = target.startsWith('/') ? target.slice(0, target.search(/\?|$/)) : new URL(target).pathname;
-  return decodeURIComponent(path).split('/').filter(Boolean);
-}
-
-function isPageNavigation(request: FastifyRequest): boolean {
-  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
-  const mode = request.headers['sec-fetch-mode'];
-  if (mode && mode !== 'navigate') return false;
-  const acceptsHtml = request.headers.accept?.toLowerCase().split(',').some((entry) => {
-    const mediaType = entry.slice(0, entry.search(/;|$/)).trim();
-    const parameters = entry.split(';').slice(1);
-    const quality = parameters.find((parameter) => /^\s*q\s*=/.test(parameter));
-    return mediaType === 'text/html' && (quality === undefined || Number(quality.split('=')[1]) > 0);
-  });
-  if (!acceptsHtml) return false;
-  let segments: string[];
-  try {
-    segments = pathSegments(request.url);
-  } catch {
-    return false;
-  }
-  const firstSegment = (segments[0] ?? '').toLowerCase();
-  return !['api', 'auth', 'healthz', 'assets'].includes(firstSegment) &&
-    (!segments.some((segment) => segment.includes('.')) || isPortalPath(`/${segments.join('/')}`));
-}
-
-function isApiPath(target: string) {
-  try {
-    return ['api', 'auth'].includes((pathSegments(target)[0] ?? '').toLowerCase());
-  } catch {
-    return /^\/(?:api|auth)(?:\/|$)/i.test(target);
-  }
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {

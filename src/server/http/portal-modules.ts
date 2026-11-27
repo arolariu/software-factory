@@ -5,8 +5,6 @@ type Result<T> = T | Promise<T>;
 type Read<K extends keyof typeof ApiSchemas, A extends unknown[] = []> =
   (requester: Requester, ...args: A) => Result<ApiDto<K>>;
 export type AuthorizationProvider = ApiDto<'providerPath'>['provider'];
-export type AcceptedTask = ApiDto<'taskAccepted'>;
-export type AcceptedOperation = ApiDto<'operationAccepted'>;
 export type GatedEffect =
   | { kind: 'start'; connectionId: string; input: ApiDto<'startTask'> }
   | { kind: 'input'; taskId: string }
