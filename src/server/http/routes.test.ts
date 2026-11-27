@@ -320,6 +320,22 @@ it('limits OAuth callbacks to the portal and establishes a session only when the
   expect(badSession.headers['set-cookie']).toBeUndefined();
 });
 
+it('follows a callback to a dotted connection ID but rejects dot-segment destinations', async () => {
+  const f = fixtures();
+  const app = await server(f);
+  const path = '/connections/repo.one/issues';
+  const callback = () => app.inject({ url: '/auth/github/callback?state=s&code=c', headers: { cookie } });
+  f.identity.completeAuthorization.mockReturnValueOnce({ redirectTo: path });
+  const done = await callback();
+  expect(done.headers.location).toBe(path);
+  expect((await app.inject({ url: path, headers: { accept: 'text/html' } })).body).toContain('<main>Portal</main>');
+  expect((await app.inject({ url: '/connections/repo.one/missing.js', headers: { accept: 'text/html' } })).statusCode).toBe(404);
+  for (const invalid of ['/connections/../issues', '/connections/./tasks']) {
+    f.identity.completeAuthorization.mockReturnValueOnce({ redirectTo: invalid });
+    expect((await callback()).headers.location).toBeUndefined();
+  }
+});
+
 it('updates only the selected Copilot default, returns a confirmed close, and scopes removal receipts', async () => {
   const f = fixtures();
   const app = await server(f);

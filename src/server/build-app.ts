@@ -6,7 +6,7 @@ import Fastify, { LogController, type FastifyInstance, type FastifyRequest } fro
 import { ApiSchemas } from '../shared/api/schemas.js';
 import type { PortalOptions } from './http/portal-modules.js';
 import { ApiFailure, sendProblem } from './http/problems.js';
-import { registerPortalRoutes } from './http/routes.js';
+import { isPortalPath, registerPortalRoutes } from './http/routes.js';
 import { hasCurrentSchema } from './persistence/migrations.js';
 
 export interface BuildMetadata {
@@ -48,7 +48,7 @@ function isPageNavigation(request: FastifyRequest): boolean {
   }
   const firstSegment = (segments[0] ?? '').toLowerCase();
   return !['api', 'auth', 'healthz', 'assets'].includes(firstSegment) &&
-    !segments.some((segment) => segment.includes('.'));
+    (!segments.some((segment) => segment.includes('.')) || isPortalPath(`/${segments.join('/')}`));
 }
 
 function isApiPath(target: string) {

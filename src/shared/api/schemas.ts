@@ -4,7 +4,8 @@ const object = <P extends Record<string, TSchema>>(properties: P) =>
   Type.Object(properties, { additionalProperties: false });
 const names = <const T extends readonly string[]>(...values: T) => Type.Enum(values);
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
-const id = Type.String({ minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$' });
+export const opaqueIdSegment = '[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}';
+const id = Type.String({ pattern: `^${opaqueIdSegment}$` });
 const text = Type.String();
 const nonempty = Type.String({ minLength: 1 });
 const url = Type.String({ format: 'uri', pattern: '^https://[^\\s/@\\\\?#]+(?:[/?#][^\\s\\\\]*)?$', maxLength: 4096 });

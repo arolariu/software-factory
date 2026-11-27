@@ -2,7 +2,7 @@ import cookiePlugin from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
 import type { TSchema } from 'typebox';
 import Value from 'typebox/value';
-import { ApiSchemas as s, type ApiDto } from '../../shared/api/schemas.js';
+import { ApiSchemas as s, opaqueIdSegment, type ApiDto } from '../../shared/api/schemas.js';
 import type { GatedEffect, PortalModules, PortalOptions, Requester } from './portal-modules.js';
 import { ApiFailure, sendProblem } from './problems.js';
 
@@ -37,11 +37,11 @@ function setSession(reply: FastifyReply, session: string) {
   reply.setCookie(cookieName, session, cookieOptions);
 }
 
-function portalPath(path: string) {
-  if (!/^\/(?:$|connections(?:\/[A-Za-z0-9_.:-]+)?(?:\/(?:issues|pull-requests|tasks))?$|settings(?:\/(?:factory|copilot|repository))?$|active-sessions$|statistics$)/.test(path)) {
-    throw new ApiFailure('INTERNAL_ERROR');
-  }
-  return path;
+const portalPath = new RegExp(
+  `^/(?:connections(?:/${opaqueIdSegment}(?:/(?:issues|pull-requests|tasks))?)?|settings(?:/(?:factory|copilot|repository))?|active-sessions|statistics)?$`,
+);
+export function isPortalPath(path: string): boolean {
+  return !/[\r\n]/.test(path) && portalPath.test(path);
 }
 
 export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptions): void {
@@ -135,7 +135,8 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
     const result = await modules().identity.completeAuthorization(request.params.provider, session, {
       state: request.query.state, code: request.query.code ?? null,
     });
-    const target = portalPath(result.redirectTo);
+    const target = result.redirectTo;
+    if (!isPortalPath(target)) throw new ApiFailure('INTERNAL_ERROR');
     if (result.sessionId !== undefined) setSession(reply, result.sessionId);
     return reply.redirect(target, 303);
   });
