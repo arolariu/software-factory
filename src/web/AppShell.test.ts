@@ -4,11 +4,14 @@ import AppShell from './AppShell.svelte';
 
 let target: HTMLDivElement;
 let app: ReturnType<typeof mount> | undefined;
+let originalUrl: string;
 const revision = 'c'.repeat(40);
 const builtAt = '2026-11-26T22:00:00.000Z';
 const runUrl = 'https://github.com/arolariu/software-factory/actions/runs/13/attempts/2';
 
 beforeEach(() => {
+  originalUrl = location.href;
+  sessionStorage.removeItem('factory.last-workbench');
   target = document.createElement('div');
   document.body.append(target);
 });
@@ -17,6 +20,8 @@ afterEach(async () => {
   if (app) await unmount(app);
   app = undefined;
   vi.unstubAllGlobals();
+  history.replaceState(null, '', originalUrl);
+  sessionStorage.removeItem('factory.last-workbench');
   target.remove();
 });
 
@@ -24,6 +29,16 @@ function show(response: Response) {
   vi.stubGlobal('fetch', vi.fn(async (url) => url === '/api/build' ? response : new Response(null, { status: 401 })));
   app = mount(AppShell, { target });
 }
+
+it.each([['/active-sessions', 'Active Sessions'], ['/statistics', 'Statistics']] as const)(
+  'routes %s to its report with a return link to the selected repository pane', async (path, title) => {
+    history.replaceState(null, '', path);
+    sessionStorage.setItem('factory.last-workbench', '/connections/r.1/pull-requests?state=active');
+    show(Response.json({ revision, builtAt, runUrl: null }));
+    await vi.waitFor(() => expect(target.querySelector('main h2')?.textContent).toBe(title));
+    expect(target.querySelector('header a')?.getAttribute('href')).toBe('/connections/r.1/pull-requests?state=active');
+  },
+);
 
 it('links the exact full revision and producing run for a stamped artifact', async () => {
   show(Response.json({ revision, builtAt, runUrl }));

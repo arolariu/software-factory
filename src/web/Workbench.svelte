@@ -111,22 +111,31 @@
     if (repo?.state === 'connected') void run(() => list(repo), repo);
   }
 
+  function rememberView(url: URL) {
+    if (url.pathname.startsWith('/connections/')) sessionStorage.setItem('factory.last-workbench', `${url.pathname}${url.search}`);
+  }
+
   function navigate(event: MouseEvent) {
     if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     const link = event.currentTarget as HTMLAnchorElement;
     const url = new URL(link.href);
     history.pushState(null, '', url);
+    rememberView(url);
     view = readLocation(url);
     selectView();
   }
 
   function restoreView() {
-    view = readLocation(new URL(location.href));
+    const url = new URL(location.href);
+    rememberView(url);
+    view = readLocation(url);
     selectView();
   }
 
   onMount(() => {
+    const id = view.id;
+    if (id) sessionStorage.setItem('factory.last-workbench', `/connections/${id}/${kind}?state=${filter}`);
     void run(async () => {
       repos = (await read<ApiDto<'connections'>>('/api/connections')).items;
       selectView();

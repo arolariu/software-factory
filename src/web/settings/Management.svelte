@@ -10,6 +10,13 @@
   let connections = $state<ApiDto<'connections'>['items']>([]);
   let flow = $state<Flow>();
   let flowState = $state<FlowStatus['state']>('pending');
+  const flowHelp: Partial<Record<FlowStatus['state'], string>> = {
+    failed: 'GitHub approval could not be verified. Check the GitHub App installation and approved read permissions if you were connecting a repository, then try again.',
+    expired: 'That device code expired. Cancel this attempt and request a new code.',
+    cancelled: 'This attempt was cancelled. Return to Settings to start again.',
+    complete: 'This attempt is already complete. Return to Settings.',
+  };
+  const recovery = $derived(flowHelp[flowState]);
   let code = $state('');
   let repo = $state('');
   let paired = $state(false);
@@ -113,35 +120,54 @@
   <h2 id="management-heading">Factory setup and settings</h2>
   {#if message}<p role="alert">{message}</p>{/if}
   {#if flow}
-    <p>Open <a href="https://github.com/login/device" target="_blank" rel="noreferrer">GitHub device approval</a> and enter <strong>{flow.browserInstructions.userCode}</strong>.</p>
     {@const current = flow}
+    {#if recovery}
+      <p role="status">{recovery}</p>
+    {:else}
+      <p>Open <a href="https://github.com/login/device" target="_blank" rel="noreferrer">GitHub device approval</a> and enter <strong class="device-code">{flow.browserInstructions.userCode}</strong>.</p>
+    {/if}
     <p aria-live="polite">{`Authorization: ${flowState}`}</p>
-    <button type="button" onclick={() => check(current)} disabled={busy}>Check approval</button>
+    <button type="button" onclick={() => check(current)} disabled={busy || !!recovery}>Check approval</button>
     <button type="button" onclick={() => cancel(current)} disabled={busy}>Cancel authorization</button>
   {:else if me && settings}
     {@const currentSettings = settings}
-    <p>{`Signed in as ${me.user.displayName}`}</p>
-    <p>{`GitHub App Client ID: ${settings.githubClientId}.`}</p>
-    <button type="button" disabled={busy}
-      onclick={() => toggle(currentSettings)}>{settings.repositoryEnabled ? 'Disable repository authorization' : 'Enable repository authorization'}</button>
-    <label>GitHub repository URL <input type="url" bind:value={repo} placeholder="https://github.com/org/repo" /></label>
-    <button type="button" disabled={busy || !settings.repositoryEnabled || !repo} onclick={() => start({ intent: 'connect', repositoryUrl: repo })}>Connect repository</button>
-    <ul>
-      {#each connections as connection (connection.id)}
-        <li>
-          {`${connection.name} (${connection.state})`}
-          <button type="button" disabled={busy || !settings.repositoryEnabled} onclick={() => start({ intent: 'reconnect', connectionId: connection.id })}>{`Reconnect ${connection.name}`}</button>
-          <button type="button" disabled={busy} onclick={() => void perform(async () => {
-            await mutate(`/api/connections/${encodeURIComponent(connection.id)}/authorization`, 'DELETE');
-            await load();
-          })}>{`Disconnect ${connection.name}`}</button>
-        </li>
-      {/each}
-    </ul>
-    <button type="button" disabled={busy} onclick={() => void perform(async () => {
-      await mutate('/api/auth/logout', 'POST');
-      await load();
-    })}>Sign out</button>
+    <div class="group">
+      <h3>Account</h3>
+      <p>{`Signed in as ${me.user.displayName}`}</p>
+      <p>{`GitHub App Client ID: ${settings.githubClientId}.`}</p>
+      <button type="button" disabled={busy} onclick={() => void perform(async () => {
+        await mutate('/api/auth/logout', 'POST');
+        await load();
+      })}>Sign out</button>
+    </div>
+    <div class="group">
+      <h3>Repository connections</h3>
+      <p>Install the GitHub App on the repositories you want to read. Connecting a repository will ask for approval.</p>
+      <button type="button" disabled={busy}
+        onclick={() => toggle(currentSettings)}>{settings.repositoryEnabled ? 'Disable repository authorization' : 'Enable repository authorization'}</button>
+      <form onsubmit={(event) => { event.preventDefault(); start({ intent: 'connect', repositoryUrl: repo }); }}>
+        <label>GitHub repository URL <input type="url" bind:value={repo} placeholder="https://github.com/org/repo" required /></label>
+        <button type="submit" disabled={busy || !settings.repositoryEnabled || !repo}>Connect repository</button>
+      </form>
+      <ul>
+        {#each connections as connection (connection.id)}
+          <li>
+            <strong>{connection.name}</strong>
+            <span>{connection.state}</span>
+            <button type="button" disabled={busy || !settings.repositoryEnabled} onclick={() => start({ intent: 'reconnect', connectionId: connection.id })}>{`Reconnect ${connection.name}`}</button>
+            <button type="button" disabled={busy} onclick={() => void perform(async () => {
+              await mutate(`/api/connections/${encodeURIComponent(connection.id)}/authorization`, 'DELETE');
+              await load();
+            })}>{`Disconnect ${connection.name}`}</button>
+          </li>
+        {/each}
+      </ul>
+    </div>
+    <div class="group">
+      <h3>Copilot access</h3>
+      <p>Not verified in this portal. GitHub sign-in does not verify Copilot access or a Copilot plan.</p>
+      <a href="https://github.com/arolariu/software-factory#check-copilot-access">Read about the operator access check</a>
+    </div>
   {:else if setup}
     {#if setup.state === 'unclaimed' && !paired}
       <p>Generate a setup code in the host terminal, then enter it here.</p>
@@ -158,8 +184,21 @@
 <style>
   section { background: white; border: 1px solid #dcd6e6; border-radius: 4px; padding: 12px 16px; }
   h2 { margin: 0 0 8px; font-size: 16px; }
-  label { display: block; margin: 10px 0; }
-  button { margin: 4px 8px 4px 0; }
-  input { min-width: min(24rem, 80vw); margin-left: 8px; }
+  h3 { margin: 0 0 4px; font-size: 14px; }
+  p { margin: 4px 0 8px; }
+  .group { padding: 12px 0; border-top: 1px solid #dcd6e6; }
+  .group:last-child { padding-bottom: 0; }
+  .device-code { font: 600 1.1em Consolas, monospace; }
+  form, li { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+  label { display: grid; gap: 2px; margin: 6px 0; max-width: 100%; }
+  button, input { font: inherit; color: #211c2c; background: #fff; border: 1px solid #8b8098; border-radius: 4px; padding: 3px 8px; min-height: 28px; box-sizing: border-box; }
+  button { margin: 4px 6px 6px 0; }
+  button:hover:not(:disabled), button:disabled { background: #f4f0f9; }
+  button:disabled { color: #665c70; }
+  input { width: min(22rem, 100%); }
+  ul { margin: 4px 0 0; padding: 0; list-style: none; }
+  li { align-items: center; gap: 4px 8px; border-top: 1px solid #dcd6e6; padding: 3px 0; }
+  a { color: #165f9b; }
+  :is(a, button, input):focus-visible { outline: 2px solid #165f9b; outline-offset: 2px; }
   p[role='alert'] { color: #8c2039; }
 </style>

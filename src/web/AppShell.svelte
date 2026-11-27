@@ -2,9 +2,14 @@
   import { onMount } from 'svelte';
   import Management from './settings/Management.svelte';
   import Workbench from './Workbench.svelte';
+  import ActiveSessions from './ActiveSessions.svelte';
+  import Statistics from './Statistics.svelte';
 
   let build: { revision: string | null; builtAt: string | null; runUrl: string | null } | null = $state(null);
-  const management = location.pathname === '/setup' || location.pathname === '/settings/factory';
+  const path = location.pathname;
+  const management = path === '/setup' || path === '/settings/factory';
+  const saved = sessionStorage.getItem('factory.last-workbench') ?? '';
+  const repositoriesHref = /^\/connections\/[A-Za-z0-9._-]+\/(?:issues|pull-requests)\?state=(?:open|closed|active)$/.test(saved) ? saved : '/';
 
   onMount(() => {
     const controller = new AbortController();
@@ -17,12 +22,21 @@
 
 <header>
   <span>Software Factory</span>
-  <a href="/setup">Setup and settings</a>
+  <nav aria-label="Factory">
+    <a href={repositoriesHref}>Repositories</a>
+    <a href="/active-sessions">Active Sessions</a>
+    <a href="/statistics">Statistics</a>
+    <a href="/setup">Setup and settings</a>
+  </nav>
 </header>
 <main>
   <h1>Software Factory</h1>
   {#if management}
     <Management />
+  {:else if path === '/active-sessions'}
+    <ActiveSessions />
+  {:else if path === '/statistics'}
+    <Statistics />
   {:else}
     <Workbench />
   {/if}
@@ -52,7 +66,8 @@
 
   :global(body) { margin: 0; }
   :global(#app) { display: grid; min-height: 100dvh; grid-template-rows: auto 1fr auto; }
-  header, footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 24px; }
+  header, footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 24px; }
+  nav { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   header { background: #eee8f8; border-bottom: 1px solid #cbc1d8; font-weight: 600; }
   main { padding: 24px; min-width: 0; }
   h1 { margin: 0 0 14px; font-size: 23px; }

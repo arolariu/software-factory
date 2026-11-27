@@ -49,6 +49,8 @@ On a development host with dev dependencies installed, run `npm run build`, then
 
 The result reports SDK authentication, model count, and models disabled by policy, not a personal plan name. A failed check or an empty model list does not prove an account has no Copilot subscription. [Organization seat details](https://docs.github.com/en/rest/copilot/copilot-user-management) are admin-only and not queried by Factory. The diagnostic is not available in the production image.
 
+The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
+
 ## Test coverage
 
 Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. The container smoke checks the built application, not the Bash helpers themselves.
