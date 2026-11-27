@@ -222,6 +222,25 @@ it('does not bind a repository redirect or a changed generation after authorizat
   expect(identity.readGrant(connection.id, signed.requester)).toBe('unverified');
 });
 
+it.each([false, true])('rejects a connect callback after a newer authorization (initially connected: %s)', async (initiallyConnected) => {
+  const identity = service();
+  const signed = await signIn(identity);
+  const connect = { intent: 'connect', repositoryUrl: repo.url } as const;
+  const proof = { ...authorization, repo };
+  if (initiallyConnected) {
+    redeem.mockResolvedValueOnce(proof);
+    await start(identity, signed, connect)();
+  }
+  const delayed = start(identity, signed, { ...connect, repositoryUrl: 'https://GITHUB.com/ORG/Repo/' });
+  const connection = identity.connections(signed.requester).items[0];
+  redeem.mockResolvedValueOnce(proof);
+  await start(identity, signed, connection ? { intent: 'reconnect', connectionId: connection.id } : connect)();
+  redeem.mockResolvedValueOnce(proof);
+  await expect(delayed()).rejects.toMatchObject({ code: 'CONNECTION_ACCOUNT_CONFLICT' });
+  expect(identity.connections(signed.requester).items).toHaveLength(1);
+  if (connection) expect(identity.readGrant(connection.id, signed.requester)).toBe('valid');
+});
+
 it('serializes exact-grant refresh and persists rotation without changing portal or repository access', async () => {
   const identity = service();
   const signed = await signIn(identity);

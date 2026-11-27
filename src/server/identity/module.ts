@@ -112,11 +112,16 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       if (existing?.purpose !== 'copilot' || existing.superseded_by !== null) throw new ApiFailure('NOT_FOUND');
       hostId = existing.host_id;
     } else {
-      const existing = intent.intent === 'reconnect' ? getConnection(intent.connectionId, owner ?? '') : undefined;
-      if (intent.intent === 'reconnect' && !existing) throw new ApiFailure('NOT_FOUND');
-      const selection = registry.repository(existing?.canonical_url ?? ('repositoryUrl' in intent ? intent.repositoryUrl : ''), provider);
+      const reconnect = intent.intent === 'reconnect' ? getConnection(intent.connectionId, owner ?? '') : undefined;
+      if (intent.intent === 'reconnect' && !reconnect) throw new ApiFailure('NOT_FOUND');
+      const selection = registry.repository(reconnect?.canonical_url ?? ('repositoryUrl' in intent ? intent.repositoryUrl : ''), provider);
       hostId = selection.hostId;
       target = selection.target;
+      const { host, scope, project, name } = target;
+      const repoPath = [scope, ...(project === null ? [] : [project, '_git']), name].map(encodeURIComponent).join('/');
+      const existing = reconnect ?? db.prepare<[string, string, string], Connection>(
+        `${connectionQuery} AND r.provider = ? AND r.canonical_url = ? COLLATE NOCASE`,
+      ).get(owner ?? '', provider === 'azure-devops' ? 'azure_devops' : provider, `https://${host}/${repoPath}`);
       if (existing) connection = { id: existing.id, generation: existing.generation };
     }
     const registration = registry.registration(hostId, purpose);
@@ -168,10 +173,10 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       'SELECT id FROM repositories WHERE provider=? AND canonical_host=? AND provider_scope=? AND provider_repo_id=?',
     ).get(person.provider, repo.host, repo.scope, repo.id);
     if (!row) throw new ApiFailure('INTERNAL_ERROR');
-    const existing = db.prepare<[string, string], { id: string; identity_id: string; generation: number }>(
-      'SELECT id, identity_id, generation FROM repo_connections WHERE user_id=? AND repo_id=? AND retired_at IS NULL',
+    const existing = db.prepare<[string, string], { id: string; generation: number }>(
+      'SELECT id, generation FROM repo_connections WHERE user_id=? AND repo_id=? AND retired_at IS NULL',
     ).get(person.user_id, row.id);
-    if (existing && existing.identity_id !== person.id) throw new ApiFailure('CONNECTION_ACCOUNT_CONFLICT');
+    if (existing?.id !== pending.connection?.id) throw new ApiFailure('CONNECTION_ACCOUNT_CONFLICT');
     const id = existing?.id ?? randomUUID();
     const generation = existing ? existing.generation + 1 : 1;
     if (!existing) db.prepare('INSERT INTO repo_connections (id,repo_id,user_id,identity_id,connected_at) VALUES (?,?,?,?,?)')
