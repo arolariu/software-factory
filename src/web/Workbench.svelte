@@ -1,13 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import DOMPurify from 'dompurify';
+  import { marked } from 'marked';
   import type { ApiDto } from '../shared/api/schemas.js';
+  import { accessProblem, problemCode, readPortal, requestVersion } from './portal-read.js';
 
   type Connection = ApiDto<'connections'>['items'][number];
   type Snapshot = ApiDto<'issues'> | ApiDto<'pullRequests'>;
-  const path = location.pathname.split('/');
-  const kind = path[3] === 'pull-requests' ? 'pull-requests' : 'issues';
-  const closed = new URLSearchParams(location.search).get('state') === 'closed';
-  const filter = closed ? 'closed' : { issues: 'open', 'pull-requests': 'active' }[kind];
+  const readLocation = (url: URL) => {
+    const path = url.pathname.split('/');
+    return { id: path[2], kind: path[3] === 'pull-requests' ? 'pull-requests' as const : 'issues' as const,
+      closed: url.searchParams.get('state') === 'closed' };
+  };
+  let view = $state(readLocation(new URL(location.href)));
+  const kind = $derived(view.kind);
+  const closed = $derived(view.closed);
+  const filter = $derived(closed ? 'closed' : { issues: 'open', 'pull-requests': 'active' }[kind]);
   const repoPath = (id: string) => `/connections/${encodeURIComponent(id)}`;
   let repos = $state<Connection[]>([]);
   let selected = $state<Connection>();
@@ -18,7 +26,12 @@
   let detailAlert = $state('');
   let syncNote = $state('');
   let busy = $state(true);
-  let detailVersion = 0;
+  let commentBusy = $state(false);
+  let syncing = $state(false);
+  const detailVersion = requestVersion();
+  const listVersion = requestVersion();
+  const viewVersion = requestVersion();
+  const origins: Record<string, string> = { mine: 'Mine', other: 'Others', factory: 'Factory', unknown: 'Unknown origin' };
   const lifetime = new AbortController();
   const problems: Record<string, string> = {
     AUTH_REQUIRED: 'Signed out. Use Setup and settings to sign in.',
@@ -31,74 +44,136 @@
     failed: 'Sync failed. Try again or check repository access.', needs_recovery: 'Sync needs recovery. Try again later.',
   };
 
-  async function read<T>(url: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(url, { ...init, signal: lifetime.signal });
-    if (response.status === 401) throw new Error(problems['AUTH_REQUIRED']);
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({})) as { code?: string };
-      throw new Error(problems[body.code ?? ''] ?? 'Could not load repository data. Try again.');
-    }
-    return await response.json() as T;
+  function read<T>(url: string, init?: RequestInit): Promise<T> {
+    return readPortal<T>(url, lifetime.signal, init);
   }
 
   function message(error: unknown) {
-    return error instanceof Error ? error.message : 'Could not load repository data. Try again.';
+    return problems[accessProblem(error) ?? problemCode(error) ?? ''] ?? 'Could not load repository data. Try again.';
   }
 
   async function list(repo: Connection, cursor?: string) {
+    const ticket = listVersion.next();
     const query = new URLSearchParams({ state: filter });
     if (cursor) query.set('cursor', cursor);
     const result = await read<Snapshot>(`/api${repoPath(repo.id)}/${kind}?${query}`);
+    if (!listVersion.current(ticket)) return;
     if (cursor && result.items && snapshot?.items) {
       snapshot = { ...result, items: [...snapshot.items, ...result.items] } as Snapshot;
     } else snapshot = result;
   }
 
-  async function run(action: () => Promise<void>) {
+  function clearAccess(error: unknown, repo?: Connection) {
+    const code = accessProblem(error);
+    if (!code) return false;
+    if (code === 'AUTH_REQUIRED') repos = [];
+    if (!repo || selected?.id === repo.id || code === 'AUTH_REQUIRED') {
+      listVersion.next();
+      snapshot = undefined;
+      closeDetail();
+      alert = message(error);
+      if (code === 'AUTH_REQUIRED') selected = undefined;
+    }
+    return true;
+  }
+
+  async function run(action: () => Promise<void>, repo?: Connection) {
+    const ticket = viewVersion.next();
     busy = true;
     alert = '';
     try { await action(); }
     catch (error) {
-      snapshot = undefined;
-      closeDetail();
-      alert = message(error);
-    } finally { busy = false; }
+      if (!clearAccess(error, repo) && viewVersion.current(ticket)) {
+        if (snapshot?.items) snapshot = { ...snapshot, freshness: 'stale' } as Snapshot;
+        alert = message(error);
+      }
+    } finally { if (viewVersion.current(ticket)) busy = false; }
   }
 
   function closeDetail() {
-    detailVersion++;
+    detailVersion.next();
     expanded = undefined;
     detail = undefined;
     detailAlert = '';
+    commentBusy = false;
+  }
+
+  function selectView() {
+    selected = view.id ? repos.find((repo) => encodeURIComponent(repo.id) === view.id) : repos[0];
+    viewVersion.next();
+    listVersion.next();
+    closeDetail();
+    snapshot = undefined;
+    alert = '';
+    busy = false;
+    const repo = selected;
+    if (repo?.state === 'connected') void run(() => list(repo), repo);
+  }
+
+  function navigate(event: MouseEvent) {
+    if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    const link = event.currentTarget as HTMLAnchorElement;
+    const url = new URL(link.href);
+    history.pushState(null, '', url);
+    view = readLocation(url);
+    selectView();
+  }
+
+  function restoreView() {
+    view = readLocation(new URL(location.href));
+    selectView();
   }
 
   onMount(() => {
     void run(async () => {
       repos = (await read<ApiDto<'connections'>>('/api/connections')).items;
-      selected = path[1] === 'connections' && path[2] ? repos.find((repo) => encodeURIComponent(repo.id) === path[2]) : repos[0];
+      selected = view.id ? repos.find((repo) => encodeURIComponent(repo.id) === view.id) : repos[0];
       if (selected?.state === 'connected') await list(selected);
     });
     return () => lifetime.abort();
   });
 
-  async function openIssue(repo: Connection, key: string) {
+  async function readIssue(repo: Connection, key: string, cursor?: string) {
+    const version = detailVersion.next();
+    commentBusy = true;
+    detailAlert = '';
+    try {
+      const query = cursor ? `?${new URLSearchParams({ commentCursor: cursor })}` : '';
+      const response = await read<ApiDto<'issue'>>(`/api${repoPath(repo.id)}/issues/${encodeURIComponent(key)}${query}`);
+      if (detailVersion.current(version)) {
+        detail = cursor && detail ? {
+          ...detail, comments: { ...response.comments, items: [...detail.comments.items, ...response.comments.items] },
+        } : response;
+      }
+    } catch (error) {
+      if (!clearAccess(error, repo) && detailVersion.current(version)) detailAlert = message(error);
+    } finally {
+      if (detailVersion.current(version)) commentBusy = false;
+    }
+  }
+
+  function openIssue(repo: Connection, key: string) {
     const wasOpen = expanded === key;
     closeDetail();
     if (wasOpen) return;
     expanded = key;
-    const version = detailVersion;
-    try {
-      const response = await read<ApiDto<'issue'>>(`/api${repoPath(repo.id)}/issues/${encodeURIComponent(key)}`);
-      if (version === detailVersion) detail = response;
-    } catch (error) {
-      if (version === detailVersion) detailAlert = message(error);
-    }
+    void readIssue(repo, key);
   }
 
-  function sync(repo: Connection) {
+  function providerMarkup(body: ApiDto<'issue'>['description']) {
+    const html = body.format === 'markdown' ? marked.parse(body.content, { async: false }) : body.content;
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
+      ALLOWED_ATTR: ['href', 'title'], ALLOWED_URI_REGEXP: /^https?:\/\//i, ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
+    });
+  }
+
+  async function sync(repo: Connection) {
     closeDetail();
+    syncing = true;
     syncNote = 'Sync requested.';
-    void run(async () => {
+    try {
       const { csrfToken } = await read<ApiDto<'csrf'>>('/api/auth/csrf');
       const { operationId } = await read<ApiDto<'operationAccepted'>>(`/api${repoPath(repo.id)}/sync`, {
         method: 'POST', headers: { 'X-CSRF-Token': csrfToken },
@@ -108,16 +183,24 @@
         const note = syncStates[operation.state];
         if (note) {
           syncNote = note;
-          await list(repo);
+          if (selected?.id === repo.id) await run(() => list(repo), repo);
           return;
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 1000));
         lifetime.signal.throwIfAborted();
       }
       syncNote = 'Sync is still running. Refresh the list to check for new records.';
-    });
+    } catch (error) {
+      if (!clearAccess(error, repo)) syncNote = 'Sync could not be checked. Refresh the list or retry Sync.';
+    } finally { syncing = false; }
   }
 </script>
+
+<svelte:window onpopstate={restoreView} />
+{#snippet providerText(body: ApiDto<'issue'>['description'])}
+  {#if body.format === 'text'}<p class="description">{body.content}</p>
+  {:else}<div class="description">{@html providerMarkup(body)}</div>{/if}
+{/snippet}
 
 <section class="workbench" aria-labelledby="repository-heading">
   <div class="heading">
@@ -127,7 +210,7 @@
   {#if repos.length}
     <nav aria-label="Repositories" class="repos">
       {#each repos as repo (repo.id)}
-        <a href={`${repoPath(repo.id)}/issues?state=open`} aria-current={repo.id === selected?.id ? 'page' : undefined}>{repo.name}</a>
+        <a onclick={navigate} href={`${repoPath(repo.id)}/issues?state=open`} aria-current={repo.id === selected?.id ? 'page' : undefined}>{repo.name}</a>
       {/each}
     </nav>
   {/if}
@@ -135,14 +218,14 @@
     {@const repo = selected}
     <div class="toolbar">
       <nav aria-label="Repository views">
-        <a href={`${repoPath(repo.id)}/issues?state=open`} aria-current={filter === 'open' ? 'page' : undefined}>Open issues</a>
-        <a href={`${repoPath(repo.id)}/issues?state=closed`} aria-current={closed && kind === 'issues' ? 'page' : undefined}>Closed issues</a>
-        <a href={`${repoPath(repo.id)}/pull-requests?state=active`} aria-current={filter === 'active' ? 'page' : undefined}>Active PRs</a>
-        <a href={`${repoPath(repo.id)}/pull-requests?state=closed`} aria-current={closed && kind === 'pull-requests' ? 'page' : undefined}>Closed PRs</a>
+        <a onclick={navigate} href={`${repoPath(repo.id)}/issues?state=open`} aria-current={filter === 'open' ? 'page' : undefined}>Open issues</a>
+        <a onclick={navigate} href={`${repoPath(repo.id)}/issues?state=closed`} aria-current={closed && kind === 'issues' ? 'page' : undefined}>Closed issues</a>
+        <a onclick={navigate} href={`${repoPath(repo.id)}/pull-requests?state=active`} aria-current={filter === 'active' ? 'page' : undefined}>Active PRs</a>
+        <a onclick={navigate} href={`${repoPath(repo.id)}/pull-requests?state=closed`} aria-current={closed && kind === 'pull-requests' ? 'page' : undefined}>Closed PRs</a>
       </nav>
       <div class="actions">
-        <button type="button" disabled={busy} onclick={() => { closeDetail(); void run(() => list(repo)); }}>Refresh list</button>
-        <button type="button" disabled={busy} onclick={() => sync(repo)}>Sync</button>
+        <button type="button" disabled={busy} onclick={() => { closeDetail(); void run(() => list(repo), repo); }}>Refresh list</button>
+        <button type="button" disabled={busy || syncing} onclick={() => void sync(repo)}>Sync</button>
       </div>
     </div>
     {#if syncNote}<p role="status">{syncNote}</p>{/if}
@@ -154,28 +237,37 @@
         {#each snapshot.items as row (row.key)}
           <li class:expanded={expanded === row.key}>
             <div class="row">
-              <span class="meta">#{row.key}</span>
+              <span class="meta">{`#${row.key}`}</span>
               {#if 'sourceBranch' in row}
-                <a href={row.url}>{row.title}</a>
-                <span class="meta">{row.sourceBranch} to {row.targetBranch}</span>
+                <a href={row.url} target="_blank" rel="noreferrer">{row.title}</a>
+                <span class="meta">{`${row.sourceBranch} to ${row.targetBranch}`}</span>
+                <span class="meta">{origins[row.origin]}</span>
+                {#if row.draft}<span class="meta">Draft</span>{/if}
+                {#if row.state === 'merged'}<span class="meta">Merged</span>{:else if row.state === 'closed'}<span class="meta">Closed without merge</span>{/if}
+                <span class="meta">{row.checks?.total == null ? 'Checks unavailable' : row.checks.total === 0 ? 'No checks' : `${row.checks.passed}/${row.checks.total} passed`}</span>
               {:else}
                 <button class="title" type="button" aria-expanded={expanded === row.key} onclick={() => void openIssue(repo, row.key)}>{row.title}</button>
+                <span class="meta">{row.author?.displayName ?? 'Unknown author'}</span>
+                <time class="meta" datetime={row.createdAt}>{row.createdAt.slice(0, 10)}</time>
+                <span class="meta">{row.assignees.map((person) => person.displayName).join(', ') || 'Unassigned'}</span>
               {/if}
-              <span class="meta">{row.state}</span>
             </div>
             {#if expanded === row.key}
               <div class="evidence">
                 <a href={row.url}>View source issue</a>
                 {#if detail}
-                  <p class="description">{detail.description.content}</p>
+                  {@render providerText(detail.description)}
                   {#each detail.comments.items as comment (comment.id)}
-                    <p class="description">{comment.body.content}</p>
+                    {@render providerText(comment.body)}
                   {/each}
-                {:else if detailAlert}
-                  <p role="alert">{detailAlert}</p>
-                {:else}
+                  {#if detail.comments.nextCursor}
+                    {@const cursor = detail.comments.nextCursor}
+                    <button type="button" disabled={commentBusy} onclick={() => void readIssue(repo, row.key, cursor)}>Load more comments</button>
+                  {/if}
+                {:else if !detailAlert}
                   <p role="status">Loading issue details...</p>
                 {/if}
+                {#if detailAlert}<p role="alert">{detailAlert}</p>{/if}
               </div>
             {/if}
           </li>
@@ -183,7 +275,7 @@
       </ul>
       {#if snapshot.nextCursor}
         {@const cursor = snapshot.nextCursor}
-        <button type="button" disabled={busy} onclick={() => void run(() => list(repo, cursor))}>Load more</button>
+        <button type="button" disabled={busy} onclick={() => void run(() => list(repo, cursor), repo)}>Load more</button>
       {/if}
     {:else if snapshot?.items}
       <p>No records match this view.</p>
