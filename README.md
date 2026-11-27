@@ -1,6 +1,6 @@
 # Software Factory
 
-A light, desktop-first portal for repository triage and Copilot task tracking. The foundation serves a signed-out Svelte shell and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) from one Linux container. Repository reads and explicit Sync are available through the API once delegated identity is configured. The browser is not wired to these flows yet, and task execution remains disabled.
+A light, desktop-first portal for repository triage and Copilot task tracking. The Svelte workbench and its [Fastify API](docs/superpowers/specs/2026-11-26-internal-api-design.md) run in one Linux container. After signing in and connecting a repository, open the home page, choose the repository, and select **Sync** to load issues and pull requests. Task execution and repository writes remain disabled.
 
 ## Run locally
 

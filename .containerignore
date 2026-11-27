@@ -86,6 +86,7 @@ src/web/**
 !src/web/main.ts
 !src/web/main.test.ts
 !src/web/AppShell.svelte
+!src/web/Workbench.svelte
 !src/web/settings/
 src/web/settings/**
 !src/web/settings/Management.svelte

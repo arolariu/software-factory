@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Management from './settings/Management.svelte';
+  import Workbench from './Workbench.svelte';
 
   let build: { revision: string | null; builtAt: string | null; runUrl: string | null } | null = $state(null);
   const management = location.pathname === '/setup' || location.pathname === '/settings/factory';
@@ -23,11 +24,7 @@
   {#if management}
     <Management />
   {:else}
-  <section aria-labelledby="repository-heading">
-    <span>Signed out</span>
-    <h2 id="repository-heading">Repositories</h2>
-    <p>Repository access is not configured in this build.</p>
-  </section>
+    <Workbench />
   {/if}
 </main>
 <footer>
@@ -59,9 +56,6 @@
   header { background: #eee8f8; border-bottom: 1px solid #cbc1d8; font-weight: 600; }
   main { padding: 24px; min-width: 0; }
   h1 { margin: 0 0 14px; font-size: 23px; }
-  section { background: white; border: 1px solid #dcd6e6; border-radius: 4px; padding: 12px 16px; }
-  h2 { margin: 0 0 4px; font-size: 15px; }
-  p { margin: 0; }
   footer { justify-content: start; border-top: 1px solid #dcd6e6; font-family: Consolas, monospace; }
   a { color: #165f9b; }
   a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
