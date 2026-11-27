@@ -52,11 +52,11 @@ beforeEach(() => {
 });
 afterEach(() => { db.close(); rmSync(root, { recursive: true }); });
 
-function service() {
+function service(provider = () => ({ issues, pullRequests, issue, checks })) {
   return createRepositoryService({
     db, cursorKey: Buffer.alloc(32), now: () => clock,
     access: { resolve, readGrant, verify, deny, recordVerification },
-    provider: () => ({ issues, pullRequests, issue, checks }),
+    provider,
   });
 }
 
@@ -135,6 +135,31 @@ it('retains the last complete source on a partial fetch but hides it after a con
   expect(() => api.issues(requester, 'conn', { state: 'open' })).toThrow('ACCESS_DENIED');
 });
 
+it.each([false, true])('marks both sources failed when Sync setup fails (previous snapshot: %s)', async (previous) => {
+  let failProvider = false;
+  const api = service(() => {
+    if (failProvider) throw new ApiFailure('PROVIDER_ERROR');
+    return { issues, pullRequests, issue, checks };
+  });
+  if (previous) {
+    api.sync(requester, 'conn');
+    await api.runNextOperation();
+    failProvider = true;
+  } else verify.mockRejectedValueOnce(new ApiFailure('PROVIDER_ERROR'));
+  const operation = api.sync(requester, 'conn');
+  await api.runNextOperation();
+  expect(api.read(requester, operation.operationId)).toMatchObject({
+    state: 'failed', problemCode: 'PROVIDER_ERROR', sources: [
+      { name: 'work_items', state: previous ? 'unchanged' : 'failed' },
+      { name: 'pull_requests', state: previous ? 'unchanged' : 'failed' },
+      { name: 'sessions', state: 'unavailable' },
+    ],
+  });
+  const freshness = previous ? 'stale' : 'unavailable';
+  expect(api.issues(requester, 'conn', { state: 'open' })).toMatchObject({ freshness, items: previous ? [row('1'), row('2')] : null });
+  expect(api.pullRequests(requester, 'conn', { state: 'active' })).toMatchObject({ freshness, items: previous ? [] : null });
+});
+
 it('does not publish delayed pages or renew verification after the connection generation changes', async () => {
   const api = service();
   const result = api.sync(requester, 'conn');
@@ -144,7 +169,7 @@ it('does not publish delayed pages or renew verification after the connection ge
   });
   await api.runNextOperation();
   expect(recordVerification).not.toHaveBeenCalled();
-  expect(api.issues(requester, 'conn', { state: 'open' }).items).toBeNull();
+  expect(api.issues(requester, 'conn', { state: 'open' })).toMatchObject({ freshness: 'not_synced', items: null });
   expect(() => api.read(requester, result.operationId)).toThrow('NOT_FOUND');
   expect(db.prepare('SELECT state FROM repository_sync WHERE id=?').get(result.operationId)).toEqual({ state: 'failed' });
 });

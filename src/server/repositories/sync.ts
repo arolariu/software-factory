@@ -106,11 +106,13 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
       JSON.stringify(factoryKeys.has(row.key) ? { ...row, origin: 'factory' } : row)));
   }
 
-  function failSource(original: RepositoryAccess, kind: Source) {
+  function failSource(original: RepositoryAccess, kind: Source): SourceResults[number] {
+    const retained = source.get(original.id, kind, original.generation)?.revision;
     db.prepare(`INSERT INTO repository_sources VALUES (?,?,?,NULL,NULL,1) ON CONFLICT(connection_id,source) DO UPDATE SET
       revision=CASE WHEN generation=excluded.generation THEN revision END,
       fetched_at=CASE WHEN generation=excluded.generation THEN fetched_at END,
       generation=excluded.generation,failed=1`).run(original.id, kind, original.generation);
+    return { name: kind, state: retained ? 'unchanged' : 'failed' };
   }
   function finish(job: Job, state: Job['state'], problem: string | null, sources: SourceResults | null) {
     db.prepare("UPDATE repository_sync SET state=?,problem_code=?,sources=? WHERE id=? AND state='running'")
@@ -225,11 +227,7 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
               save(active, requester, kind, value.value);
               completed++;
               outcomes.push({ name: kind, state: 'updated' });
-            } else {
-              const retained = source.get(active.id, kind, active.generation)?.revision;
-              failSource(active, kind);
-              outcomes.push({ name: kind, state: retained ? 'unchanged' : 'failed' });
-            }
+            } else outcomes.push(failSource(active, kind));
           }
           outcomes.push({ name: 'sessions', state: 'unavailable' });
           if (completed > 0) access.recordVerification(active.id, requester, active.generation);
@@ -238,8 +236,19 @@ export function createRepositoryService({ db, cursorKey, access, provider, now =
         }).immediate();
       } catch (error) {
         if (signal?.aborted) return true;
-        if (original && status(error) === 'ACCESS_DENIED') access.deny(original.id, requester, original.generation);
-        finish(job, 'failed', status(error), null);
+        const active = original;
+        const code = status(error);
+        db.transaction(() => {
+          let outcomes: SourceResults | null = null;
+          if (active?.generation === job.generation) {
+            if (code === 'ACCESS_DENIED') access.deny(active.id, requester, active.generation);
+            else if (current(active, requester)) {
+              outcomes = catalog.map((kind) => failSource(active, kind));
+              outcomes.push({ name: 'sessions', state: 'unavailable' });
+            }
+          }
+          finish(job, 'failed', code, outcomes);
+        }).immediate();
       }
       return true;
     },
