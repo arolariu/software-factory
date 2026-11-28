@@ -67,6 +67,25 @@ fn create_job() -> io::Result<OwnedHandle> {
 fn read_ready(output: impl Read) -> io::Result<u16> {
     let mut line = String::new();
     BufReader::new(output.take(32)).read_line(&mut line)?;
+    let startup_error = match line.as_str() {
+        "error owner\n" => Some(
+            "The GitHub App does not match the Factory owner. Restore the original app or rebind the owner.",
+        ),
+        "error vault\n" => Some(
+            "The credential vault could not be opened. Check the Windows account and vault key.",
+        ),
+        "error assets\n" => {
+            Some("Packaged portal files are missing or invalid. Reinstall the desktop runtime.")
+        }
+        "error locked\n" => Some("Another Factory process owns this data directory."),
+        "error startup\n" => Some(
+            "The Factory sidecar could not start. Check the data directory and runtime configuration.",
+        ),
+        _ => None,
+    };
+    if let Some(message) = startup_error {
+        return Err(io::Error::other(message));
+    }
     let port = line
         .strip_prefix("ready ")
         .and_then(|value| value.strip_suffix('\n'))
@@ -114,7 +133,8 @@ impl Sidecar {
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .env_remove("NODE_OPTIONS")
-            .env_remove("NODE_PATH");
+            .env_remove("NODE_PATH")
+            .env_remove("NODE_TLS_REJECT_UNAUTHORIZED");
         if let Some(client_id) = github_client_id {
             command.arg(client_id);
         }

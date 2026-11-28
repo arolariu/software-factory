@@ -62,7 +62,9 @@ it('refuses overlapping server listeners without disturbing the original', async
   const first = await startServer({ dataDir, artifactDir, port: 0 });
   try {
     const port = Number(new URL(first.address).port);
-    await expect(startServer({ dataDir, artifactDir, port })).rejects.toThrow(/EADDRINUSE/);
+    const otherDir = join(root, 'other');
+    mkdirSync(otherDir);
+    await expect(startServer({ dataDir: otherDir, artifactDir, port })).rejects.toThrow(/EADDRINUSE/);
     expect((await fetch(`${first.address}/healthz`)).ok).toBe(true);
   } finally {
     await first.close();

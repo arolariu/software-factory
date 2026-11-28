@@ -95,6 +95,7 @@ src/server/identity/**
 !src/server/persistence/migrations.ts
 !src/server/persistence/migrations.test.ts
 !src/server/persistence/open.ts
+!src/server/persistence/instance-lock.ts
 !src/server/persistence/open.test.ts
 !src/web/
 src/web/**

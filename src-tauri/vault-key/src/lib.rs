@@ -170,10 +170,10 @@ pub fn load_or_initialize(data_dir: &Path) -> io::Result<Key> {
     staged.write_all(encrypted.as_bytes())?;
     staged.as_file().sync_all()?;
     // Publish a complete blob without ever replacing a key chosen by another process.
-    match fs::hard_link(staged.path(), &path) {
-        Ok(()) => Ok(key),
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => read_key(&path),
-        Err(error) => Err(error),
+    match staged.persist_noclobber(&path) {
+        Ok(_) => Ok(key),
+        Err(error) if error.error.kind() == ErrorKind::AlreadyExists => read_key(&path),
+        Err(error) => Err(error.error),
     }
 }
 

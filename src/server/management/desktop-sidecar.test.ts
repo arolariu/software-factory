@@ -72,6 +72,17 @@ it('does not open the vault when the parent leaves startup incomplete', async ()
   }
 });
 
+it('reports a sanitized startup reason over the private readiness pipe', async () => {
+  const control = new PassThrough();
+  const readiness = new PassThrough();
+  const pending = once(readiness, 'data');
+  const child = expect(runDesktopSidecar(control, readiness, { dataDir, artifactDir: join(root, 'missing-private-path') }))
+    .rejects.toThrow();
+  control.write(Buffer.alloc(64, 5));
+  await child;
+  expect(String((await pending)[0])).toBe('error assets\n');
+});
+
 it('drains instead of accepting any commands sent on the lifetime pipe', async () => {
   const control = new PassThrough();
   const readiness = new PassThrough();

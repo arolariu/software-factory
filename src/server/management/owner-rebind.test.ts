@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -7,7 +7,7 @@ import { migrate } from '../persistence/migrations.js';
 import { openDatabase } from '../persistence/open.js';
 import { rebindManagedOwner } from './owner-rebind.js';
 import { openManagementRuntime } from './runtime.js';
-import { runCli } from '../main.js';
+import { runCli, startServer } from '../main.js';
 
 vi.mock('node:timers/promises', () => ({ setTimeout: async () => {} }));
 
@@ -34,15 +34,43 @@ function fixture() {
 it('rebinds the existing owner only after fresh approval of the replacement app', async () => {
   const f = fixture();
   try {
+    f.db.prepare('INSERT INTO portal_sessions VALUES (?,?,?,?,?,?,?)')
+      .run('anonymous','csrf',null,null,null,null,Date.now() + 60_000);
+    f.db.prepare('INSERT INTO management_flows VALUES (?,?,?,?,?,?,?,?)')
+      .run('old-flow','anonymous','ready',JSON.stringify({ host: 'github.com', binding: binding('old-app') }),
+        'vault-ref',Date.now() + 60_000,0,5000);
     const approve = vi.fn(async () => '42');
     await rebindManagedOwner(f.directory, origin, 'old-app', 'new-app', true, vi.fn(), approve);
     expect(approve).toHaveBeenCalledWith(expect.objectContaining({ clientId: 'new-app' }), expect.any(Function));
     expect(f.readBinding()).toBe(binding('new-app'));
     expect(f.db.prepare('SELECT count(*) AS n FROM portal_sessions').get()).toEqual({ n: 0 });
+    expect(f.db.prepare('SELECT expires_at,credential_ref FROM management_flows').get())
+      .toEqual({ expires_at: 0, credential_ref: 'vault-ref' });
     expect(f.db.prepare('SELECT actor,action FROM management_audit').get()).toEqual({ actor: 'owner', action: 'GITHUB_OWNER_REBOUND' });
     expect(() => openManagementRuntime(f.db, f.directory, { publicOrigin: origin, githubClientId: 'old-app' })).toThrow('does not match');
     const restarted = openManagementRuntime(f.db, f.directory, { publicOrigin: origin, githubClientId: 'new-app' });
     await restarted.close();
+  } finally { f.close(); }
+});
+
+it('holds exclusive ownership through approval and rejects rebind against a running server', async () => {
+  const f = fixture();
+  const artifactDir = join(f.directory, 'dist');
+  mkdirSync(join(artifactDir, 'web', 'assets'), { recursive: true });
+  writeFileSync(join(artifactDir, 'web', 'index.html'), '<main>Portal</main>');
+  writeFileSync(join(artifactDir, 'build.json'), '{"revision":null,"builtAt":null,"runUrl":null}');
+  const start = () => startServer({ dataDir: f.directory, artifactDir, port: 0 });
+  const approve = vi.fn(async () => '42');
+  try {
+    const server = await start();
+    try { await expect(rebindManagedOwner(f.directory, origin, 'old-app', 'new-app', true, vi.fn(), approve)).rejects.toThrow('already in use'); }
+    finally { await server.close(); }
+    expect(approve).not.toHaveBeenCalled();
+    await rebindManagedOwner(f.directory, origin, 'old-app', 'new-app', true, vi.fn(), async () => {
+      await expect(start()).rejects.toThrow('already in use');
+      return '42';
+    });
+    await (await start()).close();
   } finally { f.close(); }
 });
 

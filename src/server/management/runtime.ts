@@ -11,6 +11,9 @@ import { createManagementSettings } from './settings.js';
 import { createSetupStore } from './setup.js';
 import { loadOrInitializeVaultKey } from './vault-key.js';
 
+export class OwnerAppError extends Error {}
+export class ManagementVaultError extends Error {}
+
 export function managementOrigin(value: string): string {
   const parsed = URL.parse(value);
   if (!parsed || parsed.protocol !== 'https:' || parsed.origin !== value) {
@@ -44,14 +47,25 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
   }] : []);
   const owner = setup.owner();
   if (owner && !registry.bound(owner.host, 'portal', owner.registrationId)) {
-    throw new Error('Configured GitHub App does not match the Factory owner. Restore the current Client ID or rebind the owner.');
+    throw new OwnerAppError('Configured GitHub App does not match the Factory owner. Restore the current Client ID or rebind the owner.');
   }
   const vaultExists = existsSync(vaultPath);
-  const key = options.loadVaultKey
-    ? options.loadVaultKey(vaultExists)
-    : loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), vaultExists);
+  const key = (() => {
+    try { return options.loadVaultKey ? options.loadVaultKey(vaultExists)
+      : loadOrInitializeVaultKey(join(dataDir, 'management-vault.key'), vaultExists); }
+    catch (error) {
+      if (!options.loadVaultKey) throw error;
+      throw new ManagementVaultError('Could not load the native credential vault key.');
+    }
+  })();
   try {
-    const vault = openCredentialVault(vaultPath, key);
+    const vault = (() => {
+      try { return openCredentialVault(vaultPath, key); }
+      catch (error) {
+        if (!options.loadVaultKey) throw error;
+        throw new ManagementVaultError('Could not open the native credential vault.');
+      }
+    })();
     const cursorKey = createHmac('sha256', key).update('software-factory/repository-cursors/v1').digest();
     const lifecycle = new AbortController();
     const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {

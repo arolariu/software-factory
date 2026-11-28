@@ -13,7 +13,7 @@ parent=$(realpath -e -- "$(dirname -- "$output")")
 target="$parent/$(basename -- "$output")"
 [[ ! -e $target && ! -L $target ]] || fail 'The output directory must not already exist.'
 
-repo=$(git rev-parse --show-toplevel)
+repo=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 revision=$(git -C "$repo" rev-parse --verify HEAD)
 scratch=$(mktemp -d -- "$parent/.factory-sidecar.XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT

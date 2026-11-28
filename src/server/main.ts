@@ -6,6 +6,7 @@ import { buildApp, type BuildAppOptions, type BuildMetadata } from './build-app.
 import { openIdentityPortal, type IdentityFiles } from './identity/portal.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
+import { lockDataDirectory } from './persistence/instance-lock.js';
 import { openManagementRuntime, type ManagementOptions } from './management/runtime.js';
 import { issueOperatorCode } from './management/operator.js';
 import { rebindManagedOwner } from './management/owner-rebind.js';
@@ -26,6 +27,18 @@ const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
 const invalidPort = 'PORT must be a valid TCP port.';
 export const desktopOrigin = 'https://factory.localhost';
 const channelPattern = /^[a-f0-9]{64}$/;
+export class StartupAssetsError extends Error {}
+
+function readAssets(artifactDir: string) {
+  try {
+    if (!statSync(join(artifactDir, 'web', 'index.html')).isFile() || !statSync(join(artifactDir, 'web', 'assets')).isDirectory()) {
+      throw new Error('Invalid compiled asset path.');
+    }
+    return JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
+  } catch {
+    throw new StartupAssetsError('The compiled portal assets or build metadata are missing or invalid.');
+  }
+}
 
 function desktopChannel(token: string): NonNullable<BuildAppOptions['allowRequest']> {
   const expected = Buffer.from(token, 'hex');
@@ -71,13 +84,16 @@ export async function startServer(options: StartupOptions) {
   if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) throw new Error(invalidPort);
   verifyDataDirectory(dataDir, options.container);
 
-  const build = JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
-  const db = openDatabase(join(dataDir, 'factory.sqlite'));
+  const release = lockDataDirectory(dataDir);
+  let db: ReturnType<typeof openDatabase> | undefined;
   let auth: ReturnType<typeof openIdentityPortal> | undefined;
   let management: ReturnType<typeof openManagementRuntime> | undefined;
   let draining = false;
 
   try {
+    const build = readAssets(artifactDir);
+    const opened = openDatabase(join(dataDir, 'factory.sqlite'));
+    db = opened;
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
     if (options.management && options.identity) throw new Error('Configure either management mode or legacy identity, not both.');
@@ -102,16 +118,22 @@ export async function startServer(options: StartupOptions) {
       try {
         await app.close();
       } finally {
-        await auth?.close();
-        await management?.close();
-        db.close();
+        try {
+          await auth?.close();
+          await management?.close();
+        } finally {
+          try { opened.close(); } finally { release(); }
+        }
       }
     };
     return { address, close };
   } catch (error) {
-    await auth?.close();
-    await management?.close();
-    db.close();
+    try {
+      await auth?.close();
+      await management?.close();
+    } finally {
+      try { db?.close(); } finally { release(); }
+    }
     throw error;
   }
 }

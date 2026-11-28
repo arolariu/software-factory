@@ -8,7 +8,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{Sidecar, lock_instance};
+use super::{Sidecar, lock_instance, read_ready};
+
+#[test]
+fn decodes_only_allowlisted_startup_failures() {
+    let owner = read_ready(&b"error owner\n"[..]).unwrap_err();
+    assert!(owner.to_string().contains("rebind the owner"));
+    let invalid = read_ready(&b"error unexpected provider text\n"[..]).unwrap_err();
+    assert_eq!(invalid.kind(), io::ErrorKind::InvalidData);
+    assert!(!invalid.to_string().contains("provider text"));
+}
 
 fn stage() -> PathBuf {
     env::var_os("FACTORY_TEST_WINDOWS_STAGE")

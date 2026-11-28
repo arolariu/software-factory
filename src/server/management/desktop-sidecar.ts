@@ -1,9 +1,14 @@
 import type { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { desktopOrigin, startServer } from '../main.js';
+import { desktopOrigin, startServer, StartupAssetsError } from '../main.js';
+import { InstanceLockError } from '../persistence/instance-lock.js';
+import { ManagementVaultError, OwnerAppError } from './runtime.js';
 
 type SidecarOptions = { dataDir: string; artifactDir: string; githubClientId?: string };
 const invalidFrame = 'Invalid desktop startup frame.';
+const startupCode = (error: unknown) => error instanceof StartupAssetsError ? 'assets'
+  : error instanceof InstanceLockError ? 'locked' : error instanceof OwnerAppError ? 'owner'
+    : error instanceof ManagementVaultError ? 'vault' : 'startup';
 
 export async function runDesktopSidecar(control: Readable, readiness: Writable, options: SidecarOptions) {
   const reader = control.iterator({ destroyOnReturn: false });
@@ -34,7 +39,11 @@ export async function runDesktopSidecar(control: Readable, readiness: Writable, 
         ...(options.githubClientId === undefined ? {} : { githubClientId: options.githubClientId }),
       },
     });
-    server = await starting;
+    try { server = await starting; }
+    catch (error) {
+      if (!parentClosed) await new Promise<void>((resolve) => readiness.write(`error ${startupCode(error)}\n`, () => resolve()));
+      throw error;
+    }
     frame.fill(0);
     if (!parentClosed) {
       const port = new URL(server.address).port;

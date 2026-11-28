@@ -6,6 +6,7 @@ import { createRegistry, type Registration } from '../identity/github-hosts.js';
 import { createOAuthTransport } from '../identity/oauth.js';
 import { hasCurrentSchema } from '../persistence/migrations.js';
 import { openDatabase } from '../persistence/open.js';
+import { lockDataDirectory } from '../persistence/instance-lock.js';
 import { createSetupStore } from './setup.js';
 
 type Approve = (registration: Registration, showCode: (code: string) => void) => Promise<string>;
@@ -47,8 +48,11 @@ export async function rebindManagedOwner(
   }
   const file = join(dataDir, 'factory.sqlite');
   if (!existsSync(file)) throw new Error('Use an existing, stopped Factory data directory.');
-  const db = openDatabase(file);
+  const release = lockDataDirectory(dataDir);
+  let opened: ReturnType<typeof openDatabase> | undefined;
   try {
+    const db = openDatabase(file);
+    opened = db;
     if (!hasCurrentSchema(db)) throw new Error('Migrate the Factory database before rebinding.');
     const owner = createSetupStore(db).owner();
     if (!owner || owner.host !== 'github.com' || owner.registrationId !== registration(currentId).binding) {
@@ -63,9 +67,15 @@ export async function rebindManagedOwner(
         .run(candidate.binding, owner.provider, owner.host, owner.subject, owner.registrationId);
       if (applied.changes !== 1) throw new Error('The Factory owner changed while waiting for GitHub approval.');
       db.prepare('DELETE FROM portal_sessions WHERE registration_binding=?').run(owner.registrationId);
+      db.prepare(`DELETE FROM portal_sessions WHERE user_id IS NULL AND session_hash IN (
+        SELECT session_hash FROM management_flows WHERE state IN ('pending','ready') AND json_extract(context,'$.host')=?
+      )`).run(owner.host);
+      // Leave provisional credential references for the normal expiry sweep.
+      db.prepare(`UPDATE management_flows SET expires_at=0 WHERE state IN ('pending','ready') AND json_extract(context,'$.host')=?`)
+        .run(owner.host);
       db.prepare(`INSERT INTO management_audit (actor,action,occurred_at)
         SELECT user_id,'GITHUB_OWNER_REBOUND',? FROM identities WHERE provider=? AND issuer=? AND subject=?`)
         .run(Date.now(), owner.provider, `portal:${owner.host}`, owner.subject);
     }).immediate();
-  } finally { db.close(); }
+  } finally { try { opened?.close(); } finally { release(); } }
 }
