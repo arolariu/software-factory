@@ -33,8 +33,17 @@ _Avoid_: Auditor, checker
 **Review round**:
 One reviewer verdict on one head revision of a piece's pull request, plus the follow-up it triggers.
 
-**Implementer mode**:
-How a run starts and follows up its implementers: either **Factory sessions**, where the factory starts and steers each session itself, or **GitHub assignment**, where the factory assigns each piece's sub-issue to Copilot.
+**Work mode**:
+How a run's implementation work gets done on GitHub: **GitHub-managed** or **factory-managed**, chosen per run.
+_Avoid_: Implementer mode, mode A, mode B
+
+**GitHub-managed**:
+The work mode in which the factory works through GitHub's Copilot API: it assigns sub-issues to Copilot and steers the work with `@copilot` mentions, while GitHub manages the sessions.
+_Avoid_: GitHub assignment, native mode
+
+**Factory-managed**:
+The work mode in which the factory creates and manages Copilot cloud sessions itself.
+_Avoid_: Factory sessions, live mode
 
 ## People
 
