@@ -1,13 +1,18 @@
-import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
+import { accessSync, constants, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildApp, type BuildMetadata } from './build-app.js';
+import { buildApp, type BuildAppOptions, type BuildMetadata } from './build-app.js';
 import { openIdentityPortal, type IdentityFiles } from './identity/portal.js';
 import { hasCurrentSchema, migrate } from './persistence/migrations.js';
 import { openDatabase } from './persistence/open.js';
+import { lockDataDirectory } from './persistence/instance-lock.js';
 import { openManagementRuntime, type ManagementOptions } from './management/runtime.js';
 import { issueOperatorCode } from './management/operator.js';
+import { rebindManagedOwner } from './management/owner-rebind.js';
 import { createSetupStore } from './management/setup.js';
+import { inspectCatalogWithSdk } from './identity/copilot-catalog.js';
+import { cloudTrialOrigin, type TrialTarget } from './tasks/github-cloud-admission.js';
 
 interface StartupOptions {
   dataDir: string;
@@ -17,10 +22,37 @@ interface StartupOptions {
   logger?: boolean;
   identity?: IdentityFiles;
   management?: ManagementOptions;
+  desktop?: { channelToken: string };
+  cloudTrial?: TrialTarget;
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
 const invalidPort = 'PORT must be a valid TCP port.';
+export const desktopOrigin = 'https://factory.localhost';
+const channelPattern = /^[a-f0-9]{64}$/;
+export class StartupAssetsError extends Error {}
+
+function readAssets(artifactDir: string) {
+  try {
+    if (!statSync(join(artifactDir, 'web', 'index.html')).isFile() || !statSync(join(artifactDir, 'web', 'assets')).isDirectory()) {
+      throw new Error('Invalid compiled asset path.');
+    }
+    return JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
+  } catch {
+    throw new StartupAssetsError('The compiled portal assets or build metadata are missing or invalid.');
+  }
+}
+
+function desktopChannel(token: string): NonNullable<BuildAppOptions['allowRequest']> {
+  const expected = Buffer.from(token, 'hex');
+  return ({ headers, raw }) => {
+    const supplied = headers['x-factory-desktop-channel'];
+    const origin = headers.origin;
+    return headers.host === `127.0.0.1:${raw.socket.localPort}` &&
+      (origin === undefined || origin === desktopOrigin) && typeof supplied === 'string' &&
+      channelPattern.test(supplied) && timingSafeEqual(expected, Buffer.from(supplied, 'hex'));
+  };
+}
 
 export function verifyContainerData(dataDir: string, mode: number, mountInfo: string): void {
   const filesystem = mountInfo.split('\n')
@@ -44,30 +76,49 @@ function parsePort(value: string): number {
 
 export async function startServer(options: StartupOptions) {
   const { port, artifactDir, logger = false } = options;
+  const { desktop, cloudTrial, management: managed } = options;
+  if (desktop && (port !== 0 || options.container || options.identity ||
+    options.management?.publicOrigin !== desktopOrigin || !options.management.loadVaultKey ||
+    !channelPattern.test(desktop.channelToken))) {
+    throw new Error('Desktop runtime requires ephemeral loopback, a native channel and a native vault key.');
+  }
+  if (cloudTrial && (port !== 0 || desktop || options.container || options.identity ||
+    !managed?.githubClientId || !managed.inspectCopilot || managed.publicOrigin !== cloudTrialOrigin)) {
+    throw new Error('The Cloud trial requires isolated loopback and managed GitHub authorization.');
+  }
+  const expectedHost = cloudTrial && new URL(cloudTrialOrigin).host;
+  const allowRequest = desktop ? desktopChannel(desktop.channelToken)
+    : expectedHost ? ((request) => request.headers.host === expectedHost) satisfies NonNullable<BuildAppOptions['allowRequest']>
+      : undefined;
   const dataDir = resolve(options.dataDir);
   if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) throw new Error(invalidPort);
   verifyDataDirectory(dataDir, options.container);
+  if (cloudTrial && readdirSync(dataDir).length !== 0) throw new Error('The Cloud trial requires an empty data directory.');
 
-  const build = JSON.parse(readFileSync(join(artifactDir, 'build.json'), 'utf8')) as BuildMetadata;
-  const db = openDatabase(join(dataDir, 'factory.sqlite'));
+  const release = lockDataDirectory(dataDir);
+  let db: ReturnType<typeof openDatabase> | undefined;
   let auth: ReturnType<typeof openIdentityPortal> | undefined;
   let management: ReturnType<typeof openManagementRuntime> | undefined;
   let draining = false;
 
   try {
+    const build = readAssets(artifactDir);
+    const opened = openDatabase(join(dataDir, 'factory.sqlite'));
+    db = opened;
     migrate(db);
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
     if (options.management && options.identity) throw new Error('Configure either management mode or legacy identity, not both.');
     if (options.identity && createSetupStore(db).owner()) throw new Error('A claimed management instance cannot use legacy identity.');
-    if (options.management) management = openManagementRuntime(db, dataDir, options.management);
+    if (managed) management = openManagementRuntime(db, dataDir, managed, undefined, cloudTrial);
     if (options.identity) auth = openIdentityPortal(db, dataDir, options.identity);
     const portal = auth?.portal ?? management?.portal;
     const app = await buildApp({
       db, staticRoot: join(artifactDir, 'web'), build, isDraining: () => draining, logger,
       ...(portal && { portal }),
       ...(management && { management }),
+      ...(allowRequest && { allowRequest }),
     });
-    const address = await app.listen({ host: '0.0.0.0', port });
+    const address = await app.listen({ host: desktop || cloudTrial ? '127.0.0.1' : '0.0.0.0', port });
     auth?.start();
     management?.start();
     const close = async () => {
@@ -78,16 +129,22 @@ export async function startServer(options: StartupOptions) {
       try {
         await app.close();
       } finally {
-        await auth?.close();
-        await management?.close();
-        db.close();
+        try {
+          await auth?.close();
+          await management?.close();
+        } finally {
+          try { opened.close(); } finally { release(); }
+        }
       }
     };
     return { address, close };
   } catch (error) {
-    await auth?.close();
-    await management?.close();
-    db.close();
+    try {
+      await auth?.close();
+      await management?.close();
+    } finally {
+      try { db?.close(); } finally { release(); }
+    }
     throw error;
   }
 }
@@ -105,6 +162,13 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       process.stdout.write(`${code.code}\n`);
       return undefined;
     }
+    if (args[2] === 'rebind-github-app') {
+      if (!managed || configFile !== undefined) throw new Error('Owner rebind requires management mode.');
+      await rebindManagedOwner(dataDir, publicOrigin, githubClientId, env['FACTORY_GITHUB_REBIND_CLIENT_ID'],
+        process.stdout.isTTY === true, console.log);
+      console.log('Owner verified. Start Factory with the replacement Client ID and sign in again.');
+      return undefined;
+    }
     const server = await startServer({
       dataDir,
       port: parsePort(env['PORT'] ?? '3000'),
@@ -114,6 +178,7 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       ...(managed && { management: {
         publicOrigin,
         ...(githubClientId && { githubClientId }),
+        ...(env['FACTORY_COPILOT_ACCESS'] === '1' && { inspectCopilot: inspectCatalogWithSdk }),
       } }),
       ...(configFile !== undefined && { identity: {
         configFile, keyFile: env['FACTORY_CREDENTIAL_KEY_FILE'] ?? '/run/secrets/identity-key',

@@ -14,6 +14,11 @@ const migrations: readonly Migration[] = [
   { version: 3, sql: readMigration('./003-repository-sync.sql') },
   { version: 4, sql: readMigration('./004-management.sql') },
   { version: 5, sql: readMigration('./005-management-authorization.sql') },
+  { version: 6, sql: readMigration('./006-task-observations.sql') },
+  { version: 7, sql: readMigration('./007-supervised-starts.sql') },
+  { version: 8, sql: readMigration('./008-task-controls.sql') },
+  { version: 9, sql: readMigration('./009-task-sdk-usage.sql') },
+  { version: 10, sql: readMigration('./010-task-start-options.sql') },
 ];
 
 const requiredTables = [
@@ -22,8 +27,12 @@ const requiredTables = [
   'repository_sources', 'repository_rows', 'repository_sync',
   'management_owner', 'management_pairing', 'management_claims', 'management_pair_attempts',
   'management_flows', 'management_flow_admission', 'management_settings', 'management_audit',
+  'task_observations', 'task_starts', 'task_controls', 'task_sdk_usage', 'task_start_options',
 ];
-const requiredIndexes = ['one_current_connection_per_user_repo', 'one_active_task_per_repo_item', 'repository_sync_in_flight'];
+const requiredIndexes = [
+  'one_current_connection_per_user_repo', 'one_active_task_per_repo_item', 'repository_sync_in_flight',
+  'one_pending_control_per_task',
+];
 
 export function hasCurrentSchema(db: SQLite.Database): boolean {
   if (!db.open || db.pragma('user_version', { simple: true }) !== migrations.length) return false;

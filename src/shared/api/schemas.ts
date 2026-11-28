@@ -67,6 +67,7 @@ const taskFields = { taskId: id, repoId: id, workItemKey: id, title: nullable(te
 const task = object({ ...taskFields, state: taskState });
 const usage = object({ measured: nullable(credits), unmeasuredTasks: count });
 const outcomes = { activeTasks: count, completed: count, stopped: count, failed: count, draftPrs: count, credits: usage };
+const terminalTaskState = names('completed', 'stopped', 'failed');
 
 export const ApiSchemas = {
   empty: object({}),
@@ -84,7 +85,7 @@ export const ApiSchemas = {
   prQuery: object({ state: names('active', 'closed'), ...pagination }),
   checkQuery: object({ headRevision: id, ...pagination }),
   taskQuery: object({ state: Type.Literal('active'), ...pagination }),
-  optionsQuery: object({ copilotAccountId: Type.Optional(id) }),
+  optionsQuery: object({ copilotAccountId: Type.Optional(id), includeModels: Type.Optional(Type.Literal('1')) }),
   callbackQuery: Type.Union([
     Type.Object({ state: cursor, code: nonempty, error: Type.Optional(Type.Never()) }),
     Type.Object({ state: cursor, error: nonempty, code: Type.Optional(Type.Never()) }),
@@ -106,6 +107,20 @@ export const ApiSchemas = {
   ]),
   authorizationStarted: object({ authorizationUrl: url }),
   copilotAccounts: object({ items: Type.Array(account), defaultAccountId: nullable(id) }),
+  copilotCatalog: object({
+    models: nullable(Type.Array(object({
+      id: nonempty, name: nonempty, policy: names('enabled', 'disabled', 'unconfigured', 'unknown'),
+      reasoning: Type.Array(nonempty), defaultReasoning: nullable(nonempty),
+      tokenPricing: Type.Optional(object({
+        unit: names('ai_credits', 'nano_aiu'), batchSize: Type.Integer({ minimum: 1 }),
+        inputPrice: nullable(credits), outputPrice: nullable(credits),
+      })),
+    }))),
+    quota: nullable(Type.Array(object({
+      kind: names('chat', 'completions', 'premium_interactions'), unit: Type.Literal('requests'),
+      used: credits, limit: nullable(credits), unlimited: Type.Boolean(), resetsAt: nullable(at),
+    }))),
+  }),
   copilotDefault: object({ accountId: nullable(id) }),
   connections: list(object({
     id, repoId: id, name: nonempty, provider, host: nonempty, repositoryUrl: url, accountLabel: nonempty,
@@ -149,13 +164,24 @@ export const ApiSchemas = {
   unlinkedSessions: availablePage(object({ id, runtimeKind: runtime, title: nullable(text), url: nullable(url) })),
   task: object({
     task, sessionState: nullable(sessionState), observedAt: nullable(at),
+    sessionUrl: Type.Optional(url),
+    cloudStatusAvailable: Type.Optional(Type.Literal(true)),
+    sdkUsage: Type.Optional(object({ observedAt: at, nanoAiu: nullable(count), premiumRequests: nullable(credits) })),
     pendingQuestion: nullable(object({ id, text })),
     actions: object({ context: availability, answer: availability, archive: availability }),
     draftPrUrl: nullable(url),
   }),
+  cloudTaskStatus: object({
+    state: nullable(names('queued', 'in_progress', 'completed', 'failed', 'idle', 'waiting_for_user', 'timed_out', 'cancelled')),
+    usage: Type.Optional(object({ unit: names('ai_credits', 'premium_requests'), amount: credits })),
+    recordableOutcome: Type.Optional(terminalTaskState),
+  }),
+  recordCloudOutcome: object({ expectedState: terminalTaskState }),
+  recordedCloudOutcome: object({ state: terminalTaskState }),
   activity: availablePage(object({ id, at, kind: id, summary: text })),
   taskOptions: object({
     copilotAccountId: nullable(id), launch: availability, featureBranch: availability,
+    modelPicker: Type.Optional(Type.Literal(true)),
     models: object({
       availability, items: Type.Array(object({ id, name: text, supportedEfforts: Type.Array(nonempty) })),
     }),

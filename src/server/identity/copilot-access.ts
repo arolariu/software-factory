@@ -1,30 +1,6 @@
-import { mkdtempDisposableSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { createGitHubDeviceFlow, githubDeviceApproval } from './device-flow.js';
-
-interface AccessReader {
-  getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string; login?: string }>;
-  listModels(): Promise<readonly { policy?: { state: string } }[]>;
-}
-interface RuntimeOptions {
-  gitHubToken: string;
-  useLoggedInUser: false;
-  mode: 'empty';
-  workingDirectory: string;
-  baseDirectory: string;
-  env: NodeJS.ProcessEnv;
-  logLevel: 'none';
-}
-type Runtime = AccessReader & { start(): Promise<void>; forceStop(): Promise<void> };
-
-async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
-  // The pinned SDK declaration exception and upgrade checks are documented in the dependency baseline.
-  const packageName: string = '@github/copilot-sdk';
-  const { CopilotClient } = await import(packageName) as { CopilotClient: new (options: RuntimeOptions) => Runtime };
-  return new CopilotClient(options);
-}
+import { createSdk, withCopilotRuntime, type AccessReader, type Runtime, type RuntimeFactory } from './copilot-runtime.js';
 
 export async function inspectCopilotAccess(client: AccessReader) {
   const status = await client.getAuthStatus();
@@ -55,26 +31,8 @@ export async function authorizeCopilotCheck(
   throw new Error('GitHub device approval expired.');
 }
 
-export async function inspectWithSdk(token: string, create = createRuntime) {
-  using directory = mkdtempDisposableSync(join(tmpdir(), 'factory-copilot-check-'));
-  const { PATH, SystemRoot, TEMP, TMP } = process.env;
-  const client = await create({
-    gitHubToken: token, useLoggedInUser: false, mode: 'empty',
-    workingDirectory: directory.path, baseDirectory: directory.path,
-    env: { PATH, SystemRoot, TEMP, TMP }, logLevel: 'none',
-  });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      client.start().then(() => inspectCopilotAccess(client)),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Copilot access check timed out.')), 20_000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    await client.forceStop();
-  }
+export function inspectWithSdk(token: string, create: RuntimeFactory<Runtime> = createSdk) {
+  return withCopilotRuntime(token, create, inspectCopilotAccess);
 }
 
 export async function runCopilotAccessCheck(

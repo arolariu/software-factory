@@ -5,6 +5,7 @@
   import { marked } from 'marked';
   import type { ApiDto } from '../shared/api/schemas.js';
   import { accessProblem, problemCode, readPortal, requestVersion } from './portal-read.js';
+  import IssueTaskLaunch, { type StartAttempt } from './IssueTaskLaunch.svelte';
 
   type Connection = ApiDto<'connections'>['items'][number];
   type Snapshot = ApiDto<'issues'> | ApiDto<'pullRequests'>;
@@ -26,6 +27,7 @@
   let alert = $state('');
   let detailAlert = $state('');
   const syncNotes = new SvelteMap<string, string>();
+  const startAttempts = new SvelteMap<string, StartAttempt>();
   let busy = $state(true);
   let commentBusy = $state(false);
   let syncing = $state(false);
@@ -67,7 +69,10 @@
   function clearAccess(error: unknown, repo?: Connection) {
     const code = accessProblem(error);
     if (!code) return false;
-    if (code === 'AUTH_REQUIRED') repos = [];
+    if (code === 'AUTH_REQUIRED') { repos = []; startAttempts.clear(); }
+    else if (repo) for (const key of startAttempts.keys()) {
+      if (key.startsWith(`${encodeURIComponent(repo.id)}/`)) startAttempts.delete(key);
+    }
     if (!repo || selected?.id === repo.id || code === 'AUTH_REQUIRED') {
       listVersion.next();
       snapshot = undefined;
@@ -287,6 +292,10 @@
                 <header class="evidence-heading"><strong>Issue details</strong><a href={row.url}>View source issue</a></header>
                 {#if detail}
                   {@render providerText(detail.description)}
+                  {#if detail.issue?.state === 'open'}
+                    <IssueTaskLaunch issue={detail.issue} connectionId={repo.id} attempts={startAttempts} lifetime={lifetime.signal}
+                      onAccessLost={(error) => clearAccess(error, repo)} />
+                  {/if}
                   {#each detail.comments.items as comment (comment.id)}
                     <div class="comment">{@render providerText(comment.body)}</div>
                   {/each}

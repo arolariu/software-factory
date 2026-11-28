@@ -49,8 +49,8 @@
 <aside class="proof-rail" aria-label="Workspace context">
   <div class="rail-note">
     <span class="rail-rule"></span>
-    <strong>Read-only workspace</strong>
-    <p>Browse repository evidence and review activity. Task execution is disabled.</p>
+    <strong>Repository workspace</strong>
+    <p>Browse repository evidence and review activity. Task launch depends on repository and Copilot access.</p>
   </div>
 </aside>
   <footer>

@@ -32,6 +32,7 @@ export type FlowStatus = Static<typeof FlowStatus>;
 const version = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
 export const InstanceSettings = Type.Object({
   version, repositoryEnabled: Type.Boolean(), githubClientId: Type.String(),
+  copilotEnabled: Type.Optional(Type.Literal(true)),
 }, { additionalProperties: false });
 export type InstanceSettings = Static<typeof InstanceSettings>;
 export const UpdateInstanceSettings = Type.Object({ version, repositoryEnabled: Type.Boolean() }, { additionalProperties: false });

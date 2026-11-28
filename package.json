@@ -19,12 +19,12 @@
   "dependencies": {
     "@fastify/cookie": "11.1.5",
     "@fastify/static": "10.1.12",
+    "@github/copilot-sdk": "1.0.34",
     "better-sqlite3": "13.2.0",
     "fastify": "5.12.8",
     "typebox": "1.4.7"
   },
   "devDependencies": {
-    "@github/copilot-sdk": "1.0.34",
     "@playwright/test": "1.65.1",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@types/better-sqlite3": "9.6.0",

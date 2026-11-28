@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { authorizeCopilotCheck, inspectCopilotAccess, inspectWithSdk, runCopilotAccessCheck } from './copilot-access.js';
+import { withCopilotRuntime } from './copilot-runtime.js';
 
 const runtime = {
   start: vi.fn(async () => {}),
@@ -136,4 +137,32 @@ it('does not expose upstream error details when device authorization fails', asy
   expect(output).not.toHaveBeenCalled();
   expect(report.mock.calls.flat().join(' ')).not.toContain('private');
   expect(create).not.toHaveBeenCalled();
+});
+
+it('does not invoke the reader after late startup, and cannot discard a successful receipt on cleanup failure', async () => {
+  vi.useFakeTimers();
+  const pending = Promise.withResolvers<void>();
+  const read = vi.fn(async () => 'confirmed');
+  runtime.start.mockReturnValueOnce(pending.promise);
+  const first = expect(withCopilotRuntime('ghu_fixture', create, read, 10)).rejects.toThrow('timed out');
+  await vi.advanceTimersByTimeAsync(10);
+  await first;
+  pending.resolve();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(read).not.toHaveBeenCalled();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    runtime.forceStop.mockRejectedValueOnce(new Error('private cleanup detail'));
+    await expect(withCopilotRuntime('ghu_fixture', create, read)).resolves.toBe('confirmed');
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('private');
+  } finally { warn.mockRestore(); }
+});
+
+it('does not charge startup time against the dispatch budget', async () => {
+  vi.useFakeTimers();
+  runtime.start.mockImplementationOnce(() => new Promise((resolve) => setTimeout(resolve, 9)));
+  const result = expect(withCopilotRuntime('ghu_fixture', create,
+    () => new Promise<string>((resolve) => setTimeout(() => resolve('confirmed'), 9)), 10)).resolves.toBe('confirmed');
+  await vi.advanceTimersByTimeAsync(18);
+  await result;
 });

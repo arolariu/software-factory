@@ -3,7 +3,7 @@ import type { InstanceSettings, UpdateInstanceSettings } from '../../shared/api/
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 
-export function createManagementSettings(db: SQLite.Database, githubClientId: string) {
+export function createManagementSettings(db: SQLite.Database, githubClientId: string, copilotEnabled = false) {
   const readRow = db.prepare<[], { version: number; repository_enabled: number }>(
     'SELECT version,repository_enabled FROM management_settings WHERE singleton=1',
   );
@@ -13,6 +13,7 @@ export function createManagementSettings(db: SQLite.Database, githubClientId: st
       version: stored?.version ?? 0,
       repositoryEnabled: stored?.repository_enabled !== 0,
       githubClientId,
+      ...(copilotEnabled ? { copilotEnabled: true as const } : {}),
     };
   }
   function authorize(requester: Requester): void {

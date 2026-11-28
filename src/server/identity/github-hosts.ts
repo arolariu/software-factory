@@ -23,7 +23,7 @@ const config = strictObject({
 
 type App = Omit<Static<typeof app>, 'secret'> & { secret?: string; flow?: 'device' };
 export type GitHubHostProfile = Static<typeof profile>;
-type GitHubDeviceProfile = { hostname: 'github.com'; label: string; deviceClientId: string };
+type GitHubDeviceProfile = { hostname: 'github.com'; label: string; deviceClientId: string; copilotEnabled?: boolean };
 export type Purpose = 'portal' | 'repository' | 'copilot';
 export type IdentityProvider = 'github' | 'azure_devops';
 export interface Registration extends App {
@@ -69,7 +69,7 @@ export function createRegistry(hosts: readonly (GitHubHostProfile | GitHubDevice
     let registrations: Partial<Record<Purpose, App>>;
     if (shareDeviceApp) {
       const device = { id: host.deviceClientId, clientId: host.deviceClientId, flow: 'device' as const };
-      registrations = { portal: device, repository: device };
+      registrations = { portal: device, repository: device, ...(host.copilotEnabled && { copilot: device }) };
     } else registrations = host.registrations;
     for (const purpose of ['portal', 'repository', 'copilot'] as const) {
       const spec = registrations[purpose];

@@ -11,6 +11,12 @@
     queued: 'Queued', starting: 'Starting', running: 'Running', publishing: 'Publishing',
     stopping: 'Stopping', unverified: 'Unverified',
   };
+  const cloudLabels = new Map([
+    ['queued', 'Queued'], ['in_progress', 'In progress'], ['completed', 'Completed'], ['failed', 'Failed'],
+    ['idle', 'Idle'], ['waiting_for_user', 'Waiting for you'], ['timed_out', 'Timed out'], ['cancelled', 'Cancelled'],
+  ]);
+  const cloudUnavailable = 'GitHub status unavailable.';
+  const usageLabels = new Map([['ai_credits', 'AI credits'], ['premium_requests', 'premium requests']]);
   const sections = [true, false] as const;
   const initial = new URLSearchParams(location.search);
   let repository = $state(initial.get('repository') ?? '');
@@ -18,6 +24,10 @@
   let detail = $state<ApiDto<'task'>>();
   let taskId = $state('');
   let detailNote = $state('');
+  let cloudNote = $state('');
+  let cloudUsage = $state<ApiDto<'cloudTaskStatus'>['usage']>();
+  let checkingCloud = $state(false);
+  let recordableOutcome = $state<ApiDto<'cloudTaskStatus'>['recordableOutcome']>();
   const detailVersion = requestVersion();
   const report = readReport<'activeSessions'>('/api/active-sessions', 'Active Sessions are unavailable. Try again later.', closeTask);
   const results = $derived(report.data);
@@ -28,11 +38,19 @@
   const visible = $derived(scoped.filter((session) => !effectiveStatus || session.state === effectiveStatus));
   const counts = $derived(attention.map((state) => ({ state, count: scoped.filter((session) => session.state === state).length })));
   const isAttention = (session: Session) => attention.some((state) => state === session.state);
+  function clearCloud() {
+    cloudNote = '';
+    cloudUsage = undefined;
+    checkingCloud = false;
+    recordableOutcome = undefined;
+  }
+
   function closeTask() {
     taskId = '';
     detailVersion.next();
     detail = undefined;
     detailNote = '';
+    clearCloud();
   }
 
   function updateFilters() {
@@ -50,6 +68,7 @@
     taskId = closed ? '' : id;
     detail = undefined;
     detailNote = '';
+    clearCloud();
     if (closed) return;
     try {
       const result = await readPortal<ApiDto<'task'>>(`/api/tasks/${encodeURIComponent(id)}`, report.signal);
@@ -59,6 +78,50 @@
     }
   }
 
+  async function checkCloudStatus(id: string) {
+    if (checkingCloud) return;
+    const version = detailVersion.next();
+    checkingCloud = true;
+    cloudNote = 'Checking GitHub status...';
+    cloudUsage = undefined;
+    recordableOutcome = undefined;
+    try {
+      const { state, usage, recordableOutcome: outcome } = await readPortal<ApiDto<'cloudTaskStatus'>>(
+        `/api/tasks/${encodeURIComponent(id)}/cloud-status`, report.signal);
+      if (!detailVersion.current(version)) return;
+      const label = cloudLabels.get(state ?? '');
+      cloudNote = label ? `GitHub status: ${label}` : cloudUnavailable;
+      cloudUsage = usage;
+      recordableOutcome = outcome;
+    } catch (error) {
+      if (!report.clearAccess(error) && detailVersion.current(version)) cloudNote = cloudUnavailable;
+    } finally {
+      if (detailVersion.current(version)) checkingCloud = false;
+    }
+  }
+
+  async function recordOutcome(id: string) {
+    const expectedState = recordableOutcome;
+    if (!expectedState) return;
+    const version = detailVersion.next();
+    checkingCloud = true;
+    recordableOutcome = undefined;
+    cloudNote = 'Verifying the GitHub outcome...';
+    cloudUsage = undefined;
+    try {
+      const { csrfToken } = await readPortal<ApiDto<'csrf'>>('/api/auth/csrf', report.signal);
+      if (!detailVersion.current(version)) return;
+      await readPortal<ApiDto<'recordedCloudOutcome'>>(`/api/tasks/${encodeURIComponent(id)}/record-cloud-outcome`, report.signal, {
+        method: 'POST', headers: { 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedState }),
+      });
+      if (detailVersion.current(version)) await report.refresh();
+    } catch (error) {
+      if (!report.clearAccess(error) && detailVersion.current(version)) cloudNote = 'Outcome not recorded. Check GitHub status again.';
+    } finally {
+      if (detailVersion.current(version)) checkingCloud = false;
+    }
+  }
 </script>
 
 <ReportFrame title="Active Sessions" {report}>
@@ -112,6 +175,29 @@
                   {#if detail}
                     <p>{`Task state: ${detail.task.state}`}</p>
                     {#if detail.pendingQuestion}<p>{detail.pendingQuestion.text}</p>{/if}
+                    {#if detail.sessionUrl}
+                      <p><a href={detail.sessionUrl} target="_blank" rel="noreferrer">Open in GitHub Copilot</a></p>
+                    {/if}
+                    {#if detail.cloudStatusAvailable}
+                      <div class="cloud-status">
+                        <button type="button" disabled={checkingCloud} onclick={() => void checkCloudStatus(session.taskId)}>Check GitHub status</button>
+                        {#if recordableOutcome}
+                          <button type="button" onclick={() => void recordOutcome(session.taskId)}>Record outcome</button>
+                        {/if}
+                        <span class="muted" role="status">{cloudNote}</span>
+                        {#if cloudUsage}
+                          <span class="muted">{`GitHub-reported usage: ${cloudUsage.amount} ${usageLabels.get(cloudUsage.unit)}`}</span>
+                        {/if}
+                      </div>
+                    {/if}
+                    {#if detail.sdkUsage}
+                      <p>
+                        Last usage sample:
+                        {detail.sdkUsage.nanoAiu === null ? 'AI units not measured' : `${detail.sdkUsage.nanoAiu} nano-AI units`};
+                        {detail.sdkUsage.premiumRequests === null ? 'premium requests not measured' : `${detail.sdkUsage.premiumRequests} premium requests`}.
+                        <time datetime={detail.sdkUsage.observedAt}>{detail.sdkUsage.observedAt}</time>
+                      </p>
+                    {/if}
                   {:else}
                     <p role="status">{detailNote || 'Loading task details...'}</p>
                   {/if}
@@ -137,6 +223,7 @@
   button.question { color: var(--question); background: var(--question-surface); }
   button[aria-pressed="true"] { color: var(--action-hover); background: var(--selection); border-color: var(--action); }
   .inset p { margin: 0; padding: .55rem .8rem; }
+  .cloud-status { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .75rem; padding: .2rem .8rem .55rem; }
   ul { margin: 0; padding: 0; list-style: none; }
   li { border-top: 1px solid var(--line); }
   .session { padding: .55rem 1rem; overflow-wrap: anywhere; }

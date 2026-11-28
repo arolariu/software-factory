@@ -23,6 +23,7 @@ export interface PortalModules {
     completeAuthorization(provider: AuthorizationProvider, sessionId: string, input: { state: string; code: string | null }): Result<{ redirectTo: string; sessionId?: string }>;
     logout(requester: Requester, sessionId: string): Result<void>;
     copilotAccounts: Read<'copilotAccounts'>;
+    copilotCatalog?: Read<'copilotCatalog', [string]>;
     setDefaultCopilotAccount(requester: Requester, accountId: string | null): Result<void>;
   };
   repositories: {
@@ -38,6 +39,8 @@ export interface PortalModules {
     activeSessions: Read<'activeSessions'>;
     unlinkedSessions: Read<'unlinkedSessions', [ApiDto<'paging'>]>;
     task: Read<'task', [string]>;
+    cloudStatus?: Read<'cloudTaskStatus', [string]>;
+    recordCloudOutcome?: Read<'recordedCloudOutcome', [string, ApiDto<'recordCloudOutcome'>]>;
     activity: Read<'activity', [string, ApiDto<'paging'>]>;
     options: Read<'taskOptions', [string, ApiDto<'optionsQuery'>]>;
     statistics: Read<'statistics'>;

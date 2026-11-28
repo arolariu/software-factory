@@ -36,6 +36,93 @@ async function click(root: HTMLElement, text: string) {
   });
 }
 
+it('links Copilot separately and shows models and account quota in their reported units', async () => {
+  let linked = false;
+  let samples = 0;
+  let defaultAccountId: string | null = null;
+  const wire = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url);
+    if (path === '/api/build') return json({ revision: null, builtAt: null, runUrl: null });
+    if (path === '/api/setup/status') return json({ state: 'claimed', signInAvailable: true });
+    if (path === '/api/me') return json({ user: { displayName: 'Owner' } });
+    if (path === '/api/connections') return json({ items: [] });
+    if (path === '/api/settings/instance') return json({ version: 0, repositoryEnabled: true, githubClientId: 'app', copilotEnabled: true });
+    if (path === '/api/auth/csrf') return json({ csrfToken: 'fixture' });
+    if (path === '/api/authorization/flows') {
+      if (init?.method !== 'POST') return json({ flow: null });
+      expect(init.body).toBe(JSON.stringify({ intent: 'link_copilot', hostId: 'github.com' }));
+      return json({ flowId: 'flow', browserInstructions: { userCode: 'ABCD-EFGH' } });
+    }
+    if (path === '/api/authorization/flows/flow') return json({ state: 'ready' });
+    if (path === '/api/authorization/flows/flow/complete') { linked = true; return noContent(); }
+    if (path === '/api/copilot/accounts') return json({ items: linked ? [
+      { id: 'grant', accountLabel: 'owner-copilot', state: 'connected', host: 'github.com' },
+      { id: 'expired', accountLabel: 'former', state: 'needs_auth', host: 'github.com' },
+    ] : [], defaultAccountId });
+    if (path === '/api/copilot/accounts/default') {
+      expect(init).toMatchObject({ method: 'PUT', headers: { 'X-CSRF-Token': 'fixture' } });
+      ({ accountId: defaultAccountId } = JSON.parse(String(init?.body)) as { accountId: string | null });
+      return noContent();
+    }
+    if (path === '/api/copilot/accounts/grant/catalog') {
+      samples++;
+      if (samples === 2) return json({ models: null, quota: [] });
+      if (samples === 3) return json({ models: [], quota: null });
+      return json({
+        models: [{
+          id: 'a', name: 'Model Alpha', policy: 'disabled', reasoning: ['low', 'high'], defaultReasoning: 'high',
+          tokenPricing: { unit: 'ai_credits', batchSize: 1_000, inputPrice: 3, outputPrice: 0 },
+        }, {
+          id: 'b', name: 'Model Beta', policy: 'enabled', reasoning: [], defaultReasoning: null,
+          tokenPricing: { unit: 'nano_aiu', batchSize: 100, inputPrice: null, outputPrice: 12 },
+        }],
+        quota: [
+          { kind: 'premium_interactions', unit: 'requests', used: 12, limit: 100, unlimited: false, resetsAt: null },
+          { kind: 'chat', unit: 'requests', used: 0, limit: null, unlimited: true, resetsAt: '2026-12-01T00:00:00.000Z' },
+        ],
+      });
+    }
+    throw new Error('Unexpected management request');
+  });
+  vi.stubGlobal('fetch', wire);
+  const root = mountSetup();
+  await click(root, 'Link GitHub Copilot');
+  await click(root, 'Check approval');
+  await click(root, 'Use owner-copilot as default');
+  await vi.waitFor(() => {
+    expect(defaultAccountId).toBe('grant');
+    expect(root.textContent).toContain('Default for new tasks');
+    expect(root.textContent).not.toContain('Use former as default');
+  });
+  await click(root, 'Clear default');
+  await vi.waitFor(() => expect(defaultAccountId).toBeNull());
+  await click(root, 'Check Copilot catalog for owner-copilot');
+  await vi.waitFor(() => {
+    expect(root.textContent).toContain('Model Alpha');
+    expect(root.textContent).toContain('12 / 100 requests used');
+    expect(root.textContent).toContain('disabled');
+    expect(root.textContent).toContain('low, high');
+    expect(root.textContent).toContain('Input 3, output 0 AI credits per 1000 tokens');
+    expect(root.textContent).toContain('Input not reported, output 12 nano-AI units per 100 tokens');
+    expect(root.textContent).toContain('Reconnect Copilot for former');
+    expect(root.textContent).toContain('Unlimited');
+    expect(root.querySelector('time')?.dateTime).toBe('2026-12-01T00:00:00.000Z');
+  });
+  expect(wire.mock.calls.find(([path]) => path === '/api/copilot/accounts/grant/catalog')?.[1])
+    .toMatchObject({ method: 'POST', headers: { 'X-CSRF-Token': 'fixture' } });
+  await click(root, 'Check Copilot catalog for owner-copilot');
+  await vi.waitFor(() => {
+    expect(root.textContent).toContain('Models could not be read');
+    expect(root.textContent).toContain('No quota reported');
+    expect(root.textContent).not.toContain('Model Alpha');
+  });
+  await click(root, 'Check Copilot catalog for owner-copilot');
+  await vi.waitFor(() => {
+    expect(root.textContent).toContain('No models reported');
+    expect(root.textContent).toContain('Account quota could not be read');
+  });
+});
+
 it('pairs, completes GitHub sign-in, toggles settings and manages repository authorization', async () => {
   let signed = false;
   let claimed = false;

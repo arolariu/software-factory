@@ -1,0 +1,14 @@
+[package]
+name = "factory-desktop-supervisor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+factory-desktop-vault-key = { path = "../vault-key" }
+getrandom = "=0.3.4"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+zeroize = "=1.8.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile = "=3.23.0"

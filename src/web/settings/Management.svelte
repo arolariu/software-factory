@@ -8,6 +8,10 @@
   let settings = $state<InstanceSettings>();
   let me = $state<ApiDto<'me'>>();
   let connections = $state<ApiDto<'connections'>['items']>([]);
+  let copilotAccounts = $state<ApiDto<'copilotAccounts'>['items']>([]);
+  let defaultCopilotAccount = $state<string | null>(null);
+  let catalog = $state<{ accountId: string; data: ApiDto<'copilotCatalog'> }>();
+  const quotaLabels = new Map([['chat', 'Chat'], ['completions', 'Completions'], ['premium_interactions', 'Premium interactions']]);
   let flow = $state<Flow>();
   let flowState = $state<FlowStatus['state']>('pending');
   const flowHelp: Partial<Record<FlowStatus['state'], string>> = {
@@ -54,6 +58,9 @@
   }
 
   async function load() {
+    catalog = undefined;
+    copilotAccounts = [];
+    defaultCopilotAccount = null;
     if ((await loadSetup()).signInAvailable) {
       const active = await read<{ flow: Flow | null }>('/api/authorization/flows');
       flow = active.flow ?? undefined;
@@ -64,6 +71,11 @@
     me = await identity.json() as ApiDto<'me'>;
     settings = await read<InstanceSettings>('/api/settings/instance');
     connections = (await read<ApiDto<'connections'>>('/api/connections')).items;
+    if (settings.copilotEnabled) {
+      const { items, defaultAccountId } = await read<ApiDto<'copilotAccounts'>>('/api/copilot/accounts');
+      copilotAccounts = items;
+      defaultCopilotAccount = defaultAccountId;
+    }
   }
   onMount(() => {
     void perform(load);
@@ -112,6 +124,21 @@
       settings = await mutate<InstanceSettings>('/api/settings/instance', 'PUT', {
         version: previous.version, repositoryEnabled: !previous.repositoryEnabled,
       });
+    });
+  }
+
+  function checkCatalog(accountId: string) {
+    void perform(async () => {
+      catalog = undefined;
+      const data = await mutate<ApiDto<'copilotCatalog'>>(`/api/copilot/accounts/${encodeURIComponent(accountId)}/catalog`, 'POST');
+      catalog = { accountId, data };
+    });
+  }
+
+  function setDefaultCopilotAccount(accountId: string | null) {
+    void perform(async () => {
+      await mutate('/api/copilot/accounts/default', 'PUT', { accountId });
+      defaultCopilotAccount = accountId;
     });
   }
 </script>
@@ -177,8 +204,68 @@
     </div>
     <div class="group">
       <h3>Copilot access</h3>
-      <p>Not verified in this portal. GitHub sign-in does not verify Copilot access or a Copilot plan.</p>
-      <a href="https://github.com/arolariu/software-factory#check-copilot-access">Read about the operator access check</a>
+      {#if settings.copilotEnabled}
+        <p>Link your GitHub Copilot account separately to check models and account quota. This check does not start a task.</p>
+        <button type="button" disabled={busy} onclick={() => start({ intent: 'link_copilot', hostId: 'github.com' })}>Link GitHub Copilot</button>
+        {#each copilotAccounts as account (account.id)}
+          <div class="copilot-account">
+            <div class="account">
+              <span><strong>{account.accountLabel}</strong>{#if account.id === defaultCopilotAccount} <span class="chip">Default for new tasks</span>{/if}</span>
+              <div class="controls">
+                {#if account.state === 'needs_auth'}
+                  <button type="button" disabled={busy} onclick={() => start({ intent: 'reconnect_copilot', copilotAccountId: account.id })}>{`Reconnect Copilot for ${account.accountLabel}`}</button>
+                {:else}
+                  <button type="button" disabled={busy} onclick={() => checkCatalog(account.id)}>{`Check Copilot catalog for ${account.accountLabel}`}</button>
+                  {#if account.id !== defaultCopilotAccount}
+                    <button type="button" disabled={busy} onclick={() => setDefaultCopilotAccount(account.id)}>{`Use ${account.accountLabel} as default`}</button>
+                  {/if}
+                {/if}
+                {#if account.id === defaultCopilotAccount}
+                  <button type="button" disabled={busy} onclick={() => setDefaultCopilotAccount(null)}>Clear default</button>
+                {/if}
+              </div>
+            </div>
+            {#if catalog?.accountId === account.id}
+              <div aria-live="polite">
+                <h4>Models</h4>
+                {#if catalog.data.models?.length}
+                  <ul>
+                    {#each catalog.data.models as model}
+                      <li>
+                        <strong>{model.name}</strong> <span class="chip">{model.policy}</span> <span class="muted">{model.reasoning.join(', ')}</span>
+                        {#if model.tokenPricing}
+                          {@const price = model.tokenPricing}
+                          <span class="muted">{`Input ${price.inputPrice ?? 'not reported'}, output ${price.outputPrice ?? 'not reported'} ${price.unit === 'ai_credits' ? 'AI credits' : 'nano-AI units'} per ${price.batchSize} tokens`}</span>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p>{catalog.data.models ? 'No models reported for this account.' : 'Models could not be read.'}</p>
+                {/if}
+                <h4>Account quota</h4>
+                {#if catalog.data.quota?.length}
+                  <ul>
+                    {#each catalog.data.quota as quota (quota.kind)}
+                      <li>
+                        <strong>{quotaLabels.get(quota.kind)}</strong>
+                        <span>{quota.limit === null ? `${quota.used} requests used` : `${quota.used} / ${quota.limit} requests used`}</span>
+                        {#if quota.unlimited}<span class="chip">Unlimited</span>{/if}
+                        {#if quota.resetsAt}<span class="muted">Resets <time datetime={quota.resetsAt}>{new Date(quota.resetsAt).toLocaleDateString()}</time></span>{/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p>{catalog.data.quota ? 'No quota reported for this account.' : 'Account quota could not be read.'}</p>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      {:else}
+        <p>Not verified in this portal. GitHub sign-in does not verify Copilot access or a Copilot plan.</p>
+        <a href="https://github.com/arolariu/software-factory#check-copilot-access">Read about the operator access check</a>
+      {/if}
     </div>
   {:else if setup}
     <div class="group approval">
@@ -221,5 +308,7 @@
   li { align-items: center; border-top: 1px solid var(--line); padding-block: .55rem; }
   .connection-name { flex: 1 1 10rem; }
   .connection-name strong { margin-inline-end: .35rem; }
+  .copilot-account { border-top: 1px solid var(--line); margin-block-start: .7rem; padding-block-start: .7rem; }
+  h4 { margin: .75rem 0 .25rem; }
   @media (max-width: 480px) { .settings-head, .group { padding-inline: .85rem; } }
 </style>

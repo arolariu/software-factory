@@ -27,7 +27,9 @@ Set `FACTORY_GITHUB_CLIENT_ID` to the public Client ID of one GitHub App with de
 
 Existing hosted previews can keep `FACTORY_GITHUB_PORTAL_CLIENT_ID` as a fallback. Keep the same sign-in Client ID to preserve the owner binding. `FACTORY_GITHUB_REPOSITORY_CLIENT_ID` is no longer used; reconnect repositories that were authorized with a different app.
 
-Setup is owner-only. The preview UI can toggle new repository authorization and connect, reconnect, or disconnect a repository locally. Disconnect does not revoke upstream authorization. Custom app replacement, Windows/Tauri packaging and signing, and provider staging verification are not part of this preview. Legacy configured deployments use the mode below; populated legacy data cannot be claimed in preview mode.
+To replace a claimed instance's public GitHub App, stop Factory and take a consistent database backup first. From a trusted interactive terminal, use the same release and data directory with `FACTORY_MANAGEMENT_MODE=1`, the existing `FACTORY_PUBLIC_ORIGIN` and `FACTORY_GITHUB_CLIENT_ID`, and set `FACTORY_GITHUB_REBIND_CLIENT_ID` to the new public ID. Run `node dist/server/main.js rebind-github-app` and approve in GitHub as the existing owner. Only an exact GitHub account match can switch the binding. After success, restart with the new `FACTORY_GITHUB_CLIENT_ID`, remove `FACTORY_GITHUB_REBIND_CLIENT_ID`, sign in again, and reconnect repositories. This procedure does not transfer ownership or change either GitHub App's installation.
+
+Setup is owner-only. The preview UI can toggle new repository authorization and connect, reconnect, or disconnect a repository locally. Disconnect does not revoke upstream authorization. Browser-managed app replacement, the Windows installer and signing, and provider staging verification are not part of this preview. Legacy configured deployments use the mode below; populated legacy data cannot be claimed in preview mode.
 
 #### Legacy file-configured mode
 
@@ -47,7 +49,51 @@ Upstream scans are bounded to 20 pages per source. If a source exceeds the bound
 
 On a development host with dev dependencies installed, run `npm run build`, then run `bash scripts/check-copilot-access.sh` in an interactive terminal with `FACTORY_GITHUB_CLIENT_ID` set to the public Client ID of your device-flow-enabled GitHub App. Approve the new device code with the account you want to verify. The check uses only that freshly authorized token and calls the SDK's authentication and model discovery methods in a temporary runtime directory. It does not use existing CLI credentials, store the token, start a task, or send a prompt.
 
-The result reports SDK authentication, model count, and models disabled by policy, not a personal plan name. A failed check or an empty model list does not prove an account has no Copilot subscription. [Organization seat details](https://docs.github.com/en/rest/copilot/copilot-user-management) are admin-only and not queried by Factory. The diagnostic is not available in the production image.
+The result reports SDK authentication, model count, and models disabled by policy, not a personal plan name. A failed check or an empty model list does not prove an account has no Copilot subscription. [Organization seat details](https://docs.github.com/en/rest/copilot/copilot-user-management) are admin-only and not queried by Factory. The diagnostic entry point is not available in the production image.
+
+On a hosted GitHub.com instance, `FACTORY_COPILOT_ACCESS=1` enables the opt-in Copilot section in Settings. Provide a writable temporary directory for the server user (normally `/tmp`); the SDK runs in an isolated temporary directory using the explicit Copilot grant, with no CLI-login or repository-grant fallback. Link Copilot through a separate device approval using the same GitHub App, then check the account's model catalog and quota. Account quota is reported as requests, not as an AI-credit balance. Missing quota, an unlimited allowance and a zero allowance are different states. The check never creates a session, sends a prompt or starts a cloud task.
+
+Model prices appear in the SDK-reported unit per token batch only if the catalog and its pricing-unit response agree on the model. Prices are rates, not charges. Active Sessions can display the latest verified sample for a mapped task (nano-AI units and premium request cost reported separately). The task usage store has no live sampler yet; incomplete SDK credit totals do not appear as zero or get added to aggregate credits.
+
+The supervised task worker can reserve and dispatch an exact requester/account/repository binding through an injected runtime. Where launch and account options are available, an open issue offers **Start task**. Retries reuse the original request, and the portal reports acceptance as queued rather than running. Its GitHub Cloud handshake requires worker readiness and a matching consumed-turn event; the SDK returning a message ID is not a delivery confirmation. Neither hosted nor desktop startup registers the cloud launcher. Enablement requires verified cloud entitlement, repository association, and correlated events on an approved disposable GitHub repository. No permission request is automatically approved.
+
+### Verify one cloud dispatch
+
+On a development host only, build Factory and choose an explicitly approved disposable **personal** GitHub.com repository containing a non-sensitive README. The GitHub App must be installed on that repository with the same Issues and Pull requests read permissions used by Factory. With the App's public Client ID in `FACTORY_GITHUB_CLIENT_ID`, run:
+
+```bash
+bash scripts/check-copilot-cloud.sh https://github.com/OWNER/REPOSITORY REPOSITORY_ID GITHUB_USER_ID
+```
+
+Use the canonical repository spelling and the immutable numeric GitHub IDs. The terminal asks you to confirm the repository and then approve a fresh device code. The trial verifies the repository ID, its owner, the App installation, and the SDK login before requesting one billable cloud session with a fixed README-summary prompt. It does not ask the agent to make or publish changes and does not auto-approve permission requests. On ambiguous delivery, inspect the printed session ID in GitHub before retrying.
+
+A successful receipt proves the readiness and consumed-turn handshake for that run. If the SDK reports the matching GitHub Copilot URL, the receipt includes it so you can inspect the run. If the matching main-agent turn ends within the observation window, the trial also checks that session's usage RPC. `usage: null` means no verified sample was obtained, not zero usage or failed delivery. An observed sample reports nano-AI units and premium request cost separately. This trial does not prove remote stop, publication, or production enablement.
+
+### Verify the portal on the same disposable repository
+
+After confirming the CLI delivery trial, use the development build to start a fresh portal:
+
+```bash
+bash scripts/start-copilot-portal-trial.sh REPOSITORY_ID GITHUB_USER_ID
+```
+
+The command uses the public `FACTORY_GITHUB_CLIENT_ID`, asks for confirmation again, and prints an ephemeral loopback backend and setup code. Configure a separate local TLS reverse proxy for `https://factory-trial.localhost:3444` that listens only on `127.0.0.1`, preserves `Host`, and forwards to the printed backend. Use a certificate trusted by your browser. For example, with a trusted local Caddy CA:
+
+```caddyfile
+https://factory-trial.localhost:3444 {
+    bind 127.0.0.1
+    tls internal
+    reverse_proxy 127.0.0.1:BACKEND_PORT
+}
+```
+
+Pair at `/setup`, sign in, connect the approved repository, link Copilot, and select it as the default in Settings. Sync the repository and use **Start task** on an open disposable issue, or **Configure model** to select an enabled model and one of its published reasoning efforts. The adapter rechecks those options before dispatch. Unsupported or stale selections never fall back silently. Model settings persist with the queued request; custom instructions and branch overrides remain unavailable. The adapter checks both stored grants and the immutable repository ID, and only requests an issue review. Each start can consume Copilot quota.
+
+Active Sessions shows **Open in GitHub Copilot** only when the runtime link is verified. **Check GitHub status** uses the [preview REST API](https://docs.github.com/en/rest/agent-tasks/agent-tasks#get-a-task-by-repo) and requires the App's **Agent tasks: Read** repository permission. When GitHub reports usage for the exact linked session, Factory shows that amount in AI credits or premium requests without adding it to the SDK sample. Missing or mismatched data is not zero, and this read never changes the Factory task state.
+
+**Record outcome** appears only after GitHub reports a terminal task and a matching terminal session with a completion timestamp. It rechecks GitHub before recording the result locally, then refreshes Active Sessions. The action does not stop or archive anything on GitHub, and unverified evidence leaves the Factory task unchanged.
+
+Ctrl+C drains Factory and removes its temporary database; it does not stop upstream sessions. This command never reads the existing preview database, and normal hosted and desktop startup leave the launcher disabled.
 
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 
@@ -56,6 +102,20 @@ The portal's Active Sessions and Statistics screens distinguish an unavailable b
 Colocate `<module>.test.ts` with its production module. Run `npm exec -- playwright install chromium` once, then `npm run coverage`. The separate server and UI reports enforce 95% lines, statements, branches, and functions. The container smoke checks the built application, not the Bash helpers themselves.
 
 `npm run check` uses the shared strict TypeScript settings for the server, Svelte, tests, and tooling, including declaration-file checks. The compiler is pinned to the newest stable release supported by `svelte-check`; see the [dependency baseline](docs/superpowers/specs/2026-11-26-npm-dependencies.md#exact-pins).
+
+## Stage the Windows runtime
+
+On Windows x64, use Git Bash and download `node-v24.22.3-win-x64.zip` from the [official Node release directory](https://nodejs.org/dist/v24.22.3/). Point `NPM_CONFIG_USERCONFIG` at the approved npm registry configuration outside the checkout, then run:
+
+```bash
+bash scripts/package-windows-sidecar.sh /path/to/node-v24.22.3-win-x64.zip /path/to/new-stage
+```
+
+The script checks the ZIP against the pinned SHA-256, builds committed `HEAD` with pinned npm, and stages only the executable, its license, compiled Factory files and production dependencies. It runs the packaged Node and SQLite against a fresh database before exposing the output. This is a staging directory, not an installer or a supervised desktop application.
+
+The native vault-key component uses Windows user-scope DPAPI and refuses to replace a missing or invalid key for an existing vault. The native supervisor owns one child per data directory. It passes the key and per-launch channel token through anonymous pipes and stops the child when the supervisor exits. The child binds an ephemeral IPv4 loopback port and rejects direct browser requests. The Tauri window and its native proxy are not wired up yet.
+
+On Windows, run `cargo test --locked --manifest-path src-tauri/vault-key/Cargo.toml` to test key protection. Set `FACTORY_TEST_WINDOWS_STAGE` to the staging directory created above, then run `cargo test --locked --manifest-path src-tauri/supervisor/Cargo.toml -- --include-ignored` to test start, stop, restart, and supervisor crash with the packaged Node executable.
 
 ## Verify the Linux image
 

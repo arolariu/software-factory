@@ -103,6 +103,13 @@ async function server(modules?: PortalModules) {
   return app;
 }
 
+it('does not make the SDK available through an unconfigured portal', async () => {
+  const app = await server(fixtures());
+  const result = await app.inject({ method: 'POST', url: '/api/copilot/accounts/any/catalog', headers });
+  expect(result.statusCode).toBe(409);
+  expect(result.json().code).toBe('CAPABILITY_UNAVAILABLE');
+});
+
 it('rejects anonymous and inaccessible reads without returning provider data', async () => {
   const f = fixtures();
   const app = await server(f);

@@ -73,6 +73,380 @@ it('lists open issues by default and keeps inline evidence inert', async () => {
   await vi.waitFor(() => expect(target.textContent).toContain('More evidence'));
 });
 
+const launchOptions = { launch: { available: true }, copilotAccountId: 'approved-account' };
+const issueDetail = (available: boolean) => ({
+  issue: { ...issue, taskId: null, launch: available ? { available: true } : { available: false, reasonCode: 'CAPABILITY_UNAVAILABLE' } },
+  description: { format: 'text', content: 'Startup instructions.' }, comments: { items: [], nextCursor: null },
+});
+
+it.each(['low', ''] as const)('loads the model catalog on demand and preserves the selected reasoning (%s)', async (reasoning) => {
+  const starts = vi.fn((_options: RequestInit) => Response.json({ taskId: 'task-43', state: 'queued' }, { status: 202 }));
+  const catalog = vi.fn(() => Response.json({ ...launchOptions, modelPicker: true, models: {
+    availability: { available: true }, items: [
+      { id: 'm1', name: 'Model One', supportedEfforts: ['low', 'high'] },
+      { id: 'm2', name: 'Model Two', supportedEfforts: [] },
+    ],
+  } }));
+  browse('/', (url, init) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return catalog();
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url.endsWith('/tasks') && init) return starts(init);
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  await expect.element(page.getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
+  expect(catalog).not.toHaveBeenCalled();
+  await press('Configure model');
+  await page.getByLabelText('Model', { exact: true }).selectOptions('m1');
+  await page.getByLabelText('Reasoning effort').selectOptions('high');
+  await page.getByLabelText('Model', { exact: true }).selectOptions('m2');
+  await expect.element(page.getByLabelText('Reasoning effort')).not.toBeInTheDocument();
+  await page.getByLabelText('Model', { exact: true }).selectOptions('m1');
+  await page.getByLabelText('Reasoning effort').selectOptions(reasoning);
+  await press('Start with configuration');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task queued'));
+  const submitted = JSON.parse(String(starts.mock.calls[0]?.[0].body));
+  expect(submitted).toMatchObject({ workItemKey: '42', copilotAccountId: 'approved-account' });
+  expect(submitted.overrides).toEqual({ model: 'm1', ...(reasoning && { reasoningEffort: reasoning }) });
+  expect(catalog).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the default start available when model acquisition fails or switches accounts', async () => {
+  const catalog = vi.fn()
+    .mockReturnValueOnce(new Response(null, { status: 502 }))
+    .mockReturnValueOnce(Response.json({ ...launchOptions, copilotAccountId: 'other-account', models: { availability: { available: true }, items: [] } }))
+    .mockReturnValueOnce(Response.json({ ...launchOptions, models: { availability: { available: false }, items: [] } }))
+    .mockReturnValueOnce(Response.json({ ...launchOptions, models: { availability: { available: true }, items: [] } }));
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return catalog() as Response;
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  for (const message of ['Could not load models', 'Models are unavailable', 'Models are unavailable', 'No models are approved']) {
+    await press('Configure model');
+    await vi.waitFor(() => expect(target.textContent).toContain(message));
+    await expect.element(page.getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
+    await press('Hide configuration');
+  }
+  await press('Configure model');
+  expect(target.textContent).toContain('No models are approved');
+  expect(catalog).toHaveBeenCalledTimes(4);
+});
+
+it.each([200, 502])('does not re-fetch pending models or restore closed issue state after response %i', async (status) => {
+  const delayed = Promise.withResolvers<Response>();
+  const parsed = Promise.withResolvers<void>();
+  const result = Response.json({ ...launchOptions, models: { availability: { available: true }, items: [
+    { id: 'm1', name: 'Late model', supportedEfforts: [] },
+  ] } }, { status });
+  const json = result.json.bind(result);
+  vi.spyOn(result, 'json').mockImplementation(async () => { const body = await json(); parsed.resolve(); return body; });
+  const catalog = vi.fn(() => delayed.promise);
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return catalog();
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  await press('Configure model');
+  await vi.waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+  await press('Hide configuration');
+  await press('Configure model');
+  expect(catalog).toHaveBeenCalledOnce();
+  await press('Document startup');
+  delayed.resolve(result);
+  await parsed.promise;
+  await tick();
+  expect(target.textContent).not.toContain('Late model');
+  expect(target.textContent).not.toContain('Start with configuration');
+});
+
+it.each(['eligibility', 'model catalog'] as const)('clears task controls and repository evidence if %s loses access', async (phase) => {
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return phase === 'eligibility'
+      ? Response.json({ code: 'ACCESS_DENIED' }, { status: 403 }) : Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return Response.json({ code: 'ACCESS_DENIED' }, { status: 403 });
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  if (phase === 'model catalog') await press('Configure model');
+  await vi.waitFor(() => expect(target.textContent).toContain('Repository access was denied'));
+  expect(target.textContent).not.toContain('Document startup');
+  expect(target.textContent).not.toContain('Start task');
+});
+
+it('retries an uncertain start with the same request ID and retains the queued receipt when reopening the issue', async () => {
+  const first = Promise.withResolvers<Response>();
+  const starts: RequestInit[] = [];
+  let state = 'queued';
+  browse('/', (url, init) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json(launchOptions);
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url === '/api/tasks/task-42') return Response.json({ task: { taskId: 'task-42', state } });
+    if (url.endsWith('/tasks') && init?.method === 'POST') {
+      starts.push(init);
+      return starts.length === 1 ? first.promise : Response.json({ taskId: 'task-42', state: 'queued' }, { status: 202 });
+    }
+    return new Response(null, { status: 404 });
+  });
+  await press('Document startup');
+  await vi.waitFor(() => {
+    const start = target.querySelector<HTMLButtonElement>('.task-launch button');
+    expect(start?.textContent?.trim()).toBe('Start task');
+    start?.click();
+    start?.click();
+  });
+  await vi.waitFor(() => expect(starts).toHaveLength(1));
+  await expect.element(page.getByRole('button', { name: 'Starting task...' })).toBeDisabled();
+  first.resolve(Response.json({ code: 'PROVIDER_ERROR', detail: 'private' }, { status: 502 }));
+  await press('Retry start');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task queued'));
+  expect(starts).toHaveLength(2);
+  expect(starts[0]?.body).toBe(starts[1]?.body);
+  expect(JSON.parse(String(starts[0]?.body))).toEqual({
+    startRequestId: expect.any(String), copilotAccountId: 'approved-account', workItemKey: '42',
+  });
+  expect(starts[0]?.headers).toMatchObject({ 'X-CSRF-Token': 'token' });
+  expect(target.textContent).not.toContain('private');
+  state = 'needs_recovery';
+  await press('Document startup');
+  await press('Document startup');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task needs recovery'));
+  expect([...target.querySelectorAll('button')].map((e) => e.textContent?.trim())).not.toContain('Start task');
+});
+
+it('does not request launch options for a disabled issue and does not submit after closing a panel during CSRF', async () => {
+  const token = Promise.withResolvers<Response>();
+  const readCsrf = vi.fn(() => token.promise);
+  const request = vi.fn();
+  let mayLaunch = false;
+  const options = vi.fn(() => Response.json(launchOptions));
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(mayLaunch));
+    if (url.endsWith('/task-options')) return options();
+    if (url === '/api/auth/csrf') return readCsrf();
+    request();
+    return new Response(null, { status: 404 });
+  });
+  await press('Document startup');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task launch is unavailable'));
+  expect(options).not.toHaveBeenCalled();
+  await press('Document startup');
+  mayLaunch = true;
+  await press('Document startup');
+  await press('Start task');
+  await vi.waitFor(() => expect(readCsrf).toHaveBeenCalledTimes(1));
+  await press('Document startup');
+  token.resolve(Response.json({ csrfToken: 'token' }));
+  await tick();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(request).not.toHaveBeenCalled();
+  expect(target.textContent).not.toContain('Task queued');
+});
+
+it('shows terminal task receipts and permits a fresh start only after reloading eligibility', async () => {
+  const requests: string[] = [];
+  browse('/', (url, init) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json(launchOptions);
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url === '/api/tasks/prior') return Response.json({ task: { taskId: 'prior', state: 'failed' } });
+    if (url.endsWith('/tasks') && init?.method === 'POST') {
+      requests.push((JSON.parse(String(init.body)) as { startRequestId: string }).startRequestId);
+      return Response.json({ taskId: 'prior', state: 'queued' }, { status: 202 });
+    }
+    return new Response(null, { status: 404 });
+  });
+  await press('Document startup');
+  await press('Start task');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task failed'));
+  await press('Refresh launch options');
+  await press('Start task');
+  await vi.waitFor(() => expect(new Set(requests).size).toBe(2));
+});
+
+it.each(['running', 'reauthorize', 'not-found'] as const)('shows existing task state %s without offering another start', async (scenario) => {
+  const taskReads = vi.fn();
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) {
+      const current = issueDetail(false);
+      return Response.json({ ...current, issue: { ...current.issue, taskId: 'existing' } });
+    }
+    if (url === '/api/tasks/existing') {
+      taskReads();
+      if (scenario === 'not-found') return Response.json({ code: 'NOT_FOUND' }, { status: 404 });
+      if (scenario === 'reauthorize') return Response.json({ code: 'ACCESS_DENIED' }, { status: 403 });
+      return Response.json({ task: { taskId: 'existing', state: 'running' }, sessionUrl: 'https://github.com/copilot/tasks/session' });
+    }
+    return new Response(null, { status: 404 });
+  });
+  await press('Document startup');
+  await vi.waitFor(() => {
+    const text = scenario === 'running' ? 'Task running' : scenario === 'reauthorize'
+      ? 'Repository access was denied' : 'Task status could not be refreshed';
+    expect(target.textContent).toContain(text);
+  });
+  expect(taskReads).toHaveBeenCalledOnce();
+  expect(target.textContent).not.toContain('Start task');
+  if (scenario === 'running') {
+    await expect.element(page.getByRole('link', { name: 'View Copilot session' })).toHaveAttribute('href', 'https://github.com/copilot/tasks/session');
+  }
+});
+
+it('treats a malformed receipt as uncertain and disables retry when the server reports an active task', async () => {
+  const starts = vi.fn()
+    .mockReturnValueOnce(Response.json({ taskId: 'not/a/task', state: 'queued' }, { status: 202 }))
+    .mockReturnValueOnce(Response.json({ code: 'TASK_ALREADY_ACTIVE' }, { status: 409 }));
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json(launchOptions);
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    return starts() as Response;
+  });
+  await press('Document startup');
+  await press('Start task');
+  await press('Retry start');
+  await vi.waitFor(() => expect(target.textContent).toContain('A task is already active'));
+  expect(target.textContent).not.toContain('Task queued');
+  expect(target.textContent).not.toContain('Retry start');
+});
+
+it('keeps task options distinct from issue eligibility and does not show controls when Copilot has no selected account', async () => {
+  let version = 0;
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) {
+      const data = issueDetail(true);
+      return Response.json({ ...data, issue: { ...data.issue, taskId: version === 4 ? 'existing-task' : null } });
+    }
+    if (url.endsWith('/task-options')) {
+      if (version === 0) return new Response(null, { status: 502 });
+      if (version === 1) return Response.json({ ...launchOptions, copilotAccountId: null });
+      if (version === 2) return Response.json({ ...launchOptions, copilotAccountId: 'not/an/account' });
+      return Response.json({ ...launchOptions, launch: { available: false } });
+    }
+    throw new Error('Unexpected start call');
+  });
+  await press('Document startup');
+  await vi.waitFor(() => expect(target.textContent).toContain('Could not check task eligibility'));
+  for (const [next, note] of [
+    [1, 'Task launch is unavailable'], [2, 'Task launch is unavailable'], [3, 'Task launch is unavailable'],
+    [4, 'A task is already linked'],
+  ] as const) {
+    await press('Document startup');
+    version = next;
+    await press('Document startup');
+    await vi.waitFor(() => expect(target.textContent).toContain(note));
+    expect(target.textContent).not.toContain('Start task');
+  }
+});
+
+it.each([
+  ['COPILOT_REAUTH_REQUIRED', 'Reconnect Copilot in Settings'],
+  ['CAPABILITY_UNAVAILABLE', 'Task launch is unavailable'],
+] as const)('shows a recovery action instead of retrying a definitively denied start (%s)', async (code, message) => {
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json(launchOptions);
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    return Response.json({ code }, { status: 409 });
+  });
+  await press('Document startup');
+  await press('Start task');
+  await vi.waitFor(() => expect(target.textContent).toContain(message));
+  expect(target.textContent).not.toContain('Retry start');
+  await press('Refresh launch options');
+  await expect.element(page.getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
+});
+
+it('cannot restore a launch receipt after repository access is lost while the request is in flight', async () => {
+  const first = Promise.withResolvers<Response>();
+  const parsing = Promise.withResolvers<void>();
+  const receipt = Response.json({ taskId: 'late-receipt', state: 'queued' }, { status: 202 });
+  const json = receipt.json.bind(receipt);
+  vi.spyOn(receipt, 'json').mockImplementation(async () => { const body = await json(); parsing.resolve(); return body; });
+  let canRead = true;
+  const starts = vi.fn(() => first.promise);
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return canRead ? Response.json(snapshot([issue]))
+      : Response.json({ code: 'ACCESS_DENIED' }, { status: 403 });
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json(launchOptions);
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    return starts();
+  });
+  await press('Document startup');
+  await press('Start task');
+  await vi.waitFor(() => expect(starts).toHaveBeenCalledTimes(1));
+  canRead = false;
+  await press('Refresh list');
+  await vi.waitFor(() => expect(target.textContent).toContain('Repository access was denied'));
+  first.resolve(receipt);
+  await parsing.promise;
+  canRead = true;
+  await press('Refresh list');
+  await press('Document startup');
+  await expect.element(page.getByRole('button', { name: 'Start task' })).toBeEnabled();
+  expect(target.textContent).not.toContain('Task queued');
+});
+
+it.each([200, 403])('ignores a late eligibility response (%i) after closing the issue', async (status) => {
+  const delayed = Promise.withResolvers<Response>();
+  const parsed = Promise.withResolvers<void>();
+  const response = Response.json(status === 200 ? launchOptions : { code: 'ACCESS_DENIED' }, { status });
+  const json = response.json.bind(response);
+  vi.spyOn(response, 'json').mockImplementation(async () => { const body = await json(); parsed.resolve(); return body; });
+  let allowed = true;
+  const options = vi.fn(() => delayed.promise);
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(allowed));
+    if (url.endsWith('/task-options')) return options();
+    throw new Error('Unexpected start call');
+  });
+  await press('Document startup');
+  await vi.waitFor(() => expect(options).toHaveBeenCalledTimes(1));
+  await press('Document startup');
+  allowed = false;
+  await press('Document startup');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task launch is unavailable'));
+  delayed.resolve(response);
+  await parsed.promise;
+  await tick();
+  expect(options).toHaveBeenCalledTimes(1);
+  expect(target.textContent).not.toContain('Start task');
+});
+
 it('retains the snapshot after a transient list failure but clears it on a late detail access denial', async () => {
   const delayed = Promise.withResolvers<Response>();
   let reads = 0;
