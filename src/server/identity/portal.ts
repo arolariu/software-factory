@@ -19,7 +19,8 @@ import { createSupervisedLaunch, type LaunchRuntime } from '../tasks/supervised-
 import { createGitHubCloudAdmission, type TrialTarget } from '../tasks/github-cloud-admission.js';
 import { probeCloudTaskWithSdk } from '../tasks/cloud-launch.js';
 import { createTaskUsage } from '../persistence/task-usage.js';
-import { readCloudTaskStatus } from '../tasks/cloud-task-status.js';
+import { readCloudTaskEvidence } from '../tasks/cloud-task-status.js';
+import { createTaskOutcomes } from '../persistence/task-outcomes.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
 type LaunchOptions = LaunchRuntime | { approvedTarget: TrialTarget; probe?: typeof probeCloudTaskWithSdk };
@@ -83,6 +84,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
   const taskReads = createTaskReads(db, cursorKey, identity.readGrant);
   const trialTarget = launch && 'approvedTarget' in launch ? launch.approvedTarget : undefined;
   const taskUsage = trialTarget && createTaskUsage(db, identity.readGrant);
+  const taskOutcomes = createTaskOutcomes(db);
   const catalog = inspectCopilot && createCopilotCatalog(identity.readCopilotToken, inspectCopilot);
   const launchRuntime = launch && 'approvedTarget' in launch ? createGitHubCloudAdmission(launch.approvedTarget, {
     resolveConnection: identity.repositoryContext,
@@ -128,15 +130,31 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
       repositoryId: trialTarget.repoId, ownerId: trialTarget.ownerId,
     } };
   }
-  async function cloudStatus(requester: Requester, taskId: string): Promise<ApiDto<'cloudTaskStatus'>> {
+  async function cloudEvidence(requester: Requester, taskId: string) {
     const scoped = cloudContext(requester, taskId);
-    if (!scoped) return { state: null };
+    if (!scoped) return undefined;
     const grantId = scoped.binding.copilotAccountId;
     const token = await identity.readCopilotToken(grantId, requester).catch(() => undefined);
-    if (!token) return { state: null };
-    const status = await readCloudTaskStatus(scoped.target, token, request);
-    if (JSON.stringify(cloudContext(requester, taskId)) !== JSON.stringify(scoped)) return { state: null };
-    return status;
+    if (!token) return undefined;
+    const evidence = await readCloudTaskEvidence(scoped.target, token, request);
+    if (JSON.stringify(cloudContext(requester, taskId)) !== JSON.stringify(scoped)) return undefined;
+    return { ...evidence, scoped };
+  }
+  async function cloudStatus(requester: Requester, taskId: string): Promise<ApiDto<'cloudTaskStatus'>> {
+    const evidence = await cloudEvidence(requester, taskId);
+    if (!evidence) return { state: null };
+    return { ...evidence.status, ...(evidence.outcome && { recordableOutcome: evidence.outcome.state }) };
+  }
+  async function recordCloudOutcome(requester: Requester, taskId: string, input: ApiDto<'recordCloudOutcome'>): Promise<ApiDto<'recordedCloudOutcome'>> {
+    const evidence = await cloudEvidence(requester, taskId);
+    if (!evidence?.outcome || evidence.outcome.state !== input.expectedState) throw new ApiFailure('TASK_OUTCOME_UNVERIFIED');
+    const { outcome } = evidence;
+    return db.transaction(() => {
+      if (JSON.stringify(cloudContext(requester, taskId)) !== JSON.stringify(evidence.scoped)) {
+        throw new ApiFailure('TASK_OUTCOME_UNVERIFIED');
+      }
+      return taskOutcomes(taskId, outcome, Date.now());
+    }).immediate();
   }
   function taskOptions(requester: Requester, id: string, query: ApiDto<'optionsQuery'>) {
     const describe = launchRuntime?.describe;
@@ -171,7 +189,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
           const task = taskReads.task(requester, id);
           return trialTarget && task.sessionUrl ? { ...task, cloudStatusAvailable: true as const } : task;
         },
-        ...(trialTarget && { cloudStatus }),
+        ...(trialTarget && { cloudStatus, recordCloudOutcome }),
         activity: unavailable,
         options(requester, id, query) {
           const base = taskOptions(requester, id, query);

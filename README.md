@@ -91,6 +91,8 @@ Pair at `/setup`, sign in, connect the approved repository, link Copilot, and se
 
 Active Sessions shows **Open in GitHub Copilot** only when the runtime link is verified. **Check GitHub status** uses the [preview REST API](https://docs.github.com/en/rest/agent-tasks/agent-tasks#get-a-task-by-repo) and requires the App's **Agent tasks: Read** repository permission. When GitHub reports usage for the exact linked session, Factory shows that amount in AI credits or premium requests without adding it to the SDK sample. Missing or mismatched data is not zero, and this read never changes the Factory task state.
 
+**Record outcome** appears only after GitHub reports a terminal task and a matching terminal session with a completion timestamp. It rechecks GitHub before recording the result locally, then refreshes Active Sessions. The action does not stop or archive anything on GitHub, and unverified evidence leaves the Factory task unchanged.
+
 Ctrl+C drains Factory and removes its temporary database; it does not stop upstream sessions. This command never reads the existing preview database, and normal hosted and desktop startup leave the launcher disabled.
 
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.

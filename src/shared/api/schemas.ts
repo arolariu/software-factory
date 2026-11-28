@@ -67,6 +67,7 @@ const taskFields = { taskId: id, repoId: id, workItemKey: id, title: nullable(te
 const task = object({ ...taskFields, state: taskState });
 const usage = object({ measured: nullable(credits), unmeasuredTasks: count });
 const outcomes = { activeTasks: count, completed: count, stopped: count, failed: count, draftPrs: count, credits: usage };
+const terminalTaskState = names('completed', 'stopped', 'failed');
 
 export const ApiSchemas = {
   empty: object({}),
@@ -173,7 +174,10 @@ export const ApiSchemas = {
   cloudTaskStatus: object({
     state: nullable(names('queued', 'in_progress', 'completed', 'failed', 'idle', 'waiting_for_user', 'timed_out', 'cancelled')),
     usage: Type.Optional(object({ unit: names('ai_credits', 'premium_requests'), amount: credits })),
+    recordableOutcome: Type.Optional(terminalTaskState),
   }),
+  recordCloudOutcome: object({ expectedState: terminalTaskState }),
+  recordedCloudOutcome: object({ state: terminalTaskState }),
   activity: availablePage(object({ id, at, kind: id, summary: text })),
   taskOptions: object({
     copilotAccountId: nullable(id), launch: availability, featureBranch: availability,

@@ -129,6 +129,78 @@ it('recovers from invalid filters and does not describe a failed task read as su
   expect(location.search).toBe('');
 });
 
+it.each([200, 409, 403])('verifies a recorded outcome before changing the active list (%i)', async (status) => {
+  let recorded = false;
+  const updates = vi.fn((_options: RequestInit) => {
+    recorded = status === 200;
+    return Response.json(recorded ? { state: 'completed' } :
+      { code: status === 403 ? 'ACCESS_DENIED' : 'TASK_OUTCOME_UNVERIFIED' }, { status });
+  });
+  browse('/active-sessions', (url, init) => {
+    if (url === '/api/tasks/a') return Response.json({ task: { state: 'running' }, cloudStatusAvailable: true });
+    if (url === '/api/tasks/a/cloud-status') return Response.json({ state: 'completed', recordableOutcome: 'completed' });
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url === '/api/tasks/a/record-cloud-outcome' && init) return updates(init);
+    return Response.json({
+      repositories: [{ id: 'r1', name: 'Factory', provider: 'github' }],
+      sessions: recorded ? [] : [{ repoId: 'r1', workItemKey: '3', taskId: 'a', title: 'Review', state: 'running' }],
+    });
+  });
+  await press('View task');
+  await press('Check GitHub status');
+  await vi.waitFor(() => expect(target.textContent).toContain('GitHub status: Completed'));
+  expect(updates).not.toHaveBeenCalled();
+  expect(target.textContent).toContain('Task state: running');
+  await vi.waitFor(() => {
+    const button = [...target.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Record outcome');
+    expect(button).toBeDefined();
+    button?.click();
+    button?.click();
+  });
+  if (status === 200) await vi.waitFor(() => expect(target.textContent).toContain('No active sessions'));
+  else if (status === 409) {
+    await vi.waitFor(() => expect(target.textContent).toContain('Outcome not recorded'));
+    expect(target.textContent).toContain('Task state: running');
+    expect(target.textContent).not.toContain('Record outcome');
+  } else {
+    await vi.waitFor(() => expect(target.textContent).toContain('Access to this view is no longer authorized'));
+    expect(target.textContent).not.toContain('Task state: running');
+  }
+  expect(updates).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    method: 'POST', headers: { 'X-CSRF-Token': 'token', 'Content-Type': 'application/json' },
+    body: '{"expectedState":"completed"}',
+  }));
+});
+
+it('does not send an outcome write if the task closes while obtaining CSRF', async () => {
+  const csrf = Promise.withResolvers<Response>();
+  const readCsrf = vi.fn(() => csrf.promise);
+  const write = vi.fn(() => Response.json({ state: 'completed' }));
+  browse('/active-sessions', (url) => {
+    if (url === '/api/tasks/a') return Response.json({ task: { state: 'running' }, cloudStatusAvailable: true });
+    if (url === '/api/tasks/a/cloud-status') return Response.json({ state: 'completed', recordableOutcome: 'completed' });
+    if (url === '/api/auth/csrf') return readCsrf();
+    if (url === '/api/tasks/a/record-cloud-outcome') return write();
+    return Response.json({
+      repositories: [{ id: 'r1', name: 'Factory', provider: 'github' }],
+      sessions: [{ repoId: 'r1', workItemKey: '3', taskId: 'a', title: 'Review', state: 'running' }],
+    });
+  });
+  await press('View task');
+  await press('Check GitHub status');
+  await press('Record outcome');
+  await vi.waitFor(() => expect(readCsrf).toHaveBeenCalledOnce());
+  await press('View task');
+  const result = Response.json({ csrfToken: 'token' });
+  const parsed = Promise.withResolvers<void>();
+  const json = result.json.bind(result);
+  vi.spyOn(result, 'json').mockImplementation(async () => { const body = await json(); parsed.resolve(); return body; });
+  csrf.resolve(result);
+  await parsed.promise;
+  await tick();
+  expect(write).not.toHaveBeenCalled();
+});
+
 it('allows just one GitHub status check and drops its late response when task detail closes', async () => {
   const delayed = Promise.withResolvers<Response>();
   const parsed = Promise.withResolvers<void>();

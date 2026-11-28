@@ -1,5 +1,9 @@
 import { expect, it, vi } from 'vitest';
-import { readCloudTaskStatus } from './cloud-task-status.js';
+import { readCloudTaskEvidence } from './cloud-task-status.js';
+
+async function readCloudTaskStatus(...args: Parameters<typeof readCloudTaskEvidence>) {
+  return (await readCloudTaskEvidence(...args)).status;
+}
 
 const target = {
   owner: 'my-account', repository: 'disposable', repositoryId: '81', ownerId: '42',
@@ -54,6 +58,32 @@ const linked = {
   id: target.sessionId, task_id: target.sessionId, user: { id: 42 }, owner: { id: 42 }, repository: { id: 81 },
   usage: { type: 'ai_credits', amount: 0 },
 };
+
+it.each([
+  ['completed', 'completed'], ['failed', 'failed'], ['timed_out', 'failed'], ['cancelled', 'stopped'],
+] as const)('records evidence only for an exact terminal session (%s)', async (state, localState) => {
+  const completedAt = '2026-11-28T10:00:00Z';
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({
+    ...proof, state, sessions: [{ ...linked, state, completed_at: completedAt }],
+  }));
+  expect(await readCloudTaskEvidence(target, 'ghu_fixture', fetcher)).toMatchObject({
+    status: { state }, outcome: { state: localState, terminalAt: Date.parse(completedAt) },
+  });
+});
+
+it.each([
+  { state: 'idle', completed_at: '2026-11-28T10:00:00.000Z' },
+  { state: 'completed', completed_at: 'not a timestamp' },
+  { state: 'completed', completed_at: '2026-02-31T10:00:00.000Z' },
+  { state: 'completed' },
+])('does not infer a terminal outcome from missing or inconsistent session evidence (%j)', async (fields) => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({
+    ...proof, state: 'completed', sessions: [{ ...linked, ...fields }],
+  }));
+  expect(await readCloudTaskEvidence(target, 'ghu_fixture', fetcher)).toEqual({
+    status: { state: 'completed', usage: { unit: 'ai_credits', amount: 0 } },
+  });
+});
 
 it.each([
   ['ai_credits', 0], ['premium_requests', 1.25],

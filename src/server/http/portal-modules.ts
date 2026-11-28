@@ -40,6 +40,7 @@ export interface PortalModules {
     unlinkedSessions: Read<'unlinkedSessions', [ApiDto<'paging'>]>;
     task: Read<'task', [string]>;
     cloudStatus?: Read<'cloudTaskStatus', [string]>;
+    recordCloudOutcome?: Read<'recordedCloudOutcome', [string, ApiDto<'recordCloudOutcome'>]>;
     activity: Read<'activity', [string, ApiDto<'paging'>]>;
     options: Read<'taskOptions', [string, ApiDto<'optionsQuery'>]>;
     statistics: Read<'statistics'>;

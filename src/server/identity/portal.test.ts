@@ -30,6 +30,7 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
   let upstreamRepo = 91;
   let upstreamName = 'disposable';
   let upstreamTaskCreator = 42;
+  let upstreamTerminalAt: string | undefined;
   let deferredStatus: Promise<Response> | undefined;
   const statusReads = vi.fn();
   const transport = vi.fn<typeof fetch>(async (url, init) => {
@@ -62,6 +63,7 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
         sessions: [{
           id: remote, task_id: remote, user: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
           usage: { type: 'premium_requests', amount: 0.125 }, prompt: 'Private provider transcript',
+          state: 'completed', ...(upstreamTerminalAt && { completed_at: upstreamTerminalAt }),
         }],
       });
     }
@@ -144,22 +146,55 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     expect(checked.json()).toEqual({ state: 'completed', usage: { unit: 'premium_requests', amount: 0.125 } });
     expect(checked.headers['cache-control']).toBe('no-store');
     expect(statusReads).toHaveBeenCalledExactlyOnceWith(probe.mock.calls[0]?.[1].requestedSessionId);
+    const record = (requestHeaders = headers, expectedState = 'completed') => server.inject({
+      method: 'POST', url: `${location}/record-cloud-outcome`, headers: requestHeaders, payload: { expectedState },
+    });
+    expect((await record({ ...headers, origin: 'https://other.example' })).statusCode).toBe(403);
+    expect((await record()).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
     upstreamTaskCreator = 43;
     expect((await server.inject({ url: statusPath, headers })).json()).toEqual({ state: null });
     expect((await server.inject({ url: location, headers })).json().task.state).toBe('running');
     const pending = Promise.withResolvers<Response>();
     deferredStatus = pending.promise;
-    const inFlight = server.inject({ url: statusPath, headers }).then((response) => response);
-    await vi.waitFor(() => expect(statusReads).toHaveBeenCalledTimes(3));
+    const inFlight = record().then((response) => response);
+    await vi.waitFor(() => expect(statusReads).toHaveBeenCalledTimes(4));
     data.prepare('UPDATE delegated_grants SET revoked_at=1 WHERE id=?').run(account.id);
     const id = probe.mock.calls[0]?.[1].requestedSessionId;
     pending.resolve(Response.json({
       id, html_url: `https://github.com/copilot/tasks/${id}`, state: 'completed',
       creator_type: 'user', creator: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
+      sessions: [{ id, task_id: id, user: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
+        state: 'completed', completed_at: new Date().toISOString() }],
     }));
-    expect((await inFlight).json()).toEqual({ state: null });
+    expect((await inFlight).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
     expect((await server.inject({ url: statusPath, headers })).json()).toEqual({ state: null });
-    expect(statusReads).toHaveBeenCalledTimes(3);
+    expect(statusReads).toHaveBeenCalledTimes(4);
+    expect((await server.inject({ url: location, headers })).json().task.state).toBe('running');
+    data.prepare('UPDATE delegated_grants SET revoked_at=NULL WHERE id=?').run(account.id);
+    deferredStatus = undefined;
+    upstreamTaskCreator = 42;
+    upstreamTerminalAt = '2000-01-01T00:00:00Z';
+    expect((await record()).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
+    upstreamTerminalAt = '2099-01-01T00:00:00Z';
+    expect((await record()).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
+    upstreamTerminalAt = new Date().toISOString();
+    expect((await server.inject({ url: statusPath, headers })).json()).toMatchObject({ recordableOutcome: 'completed' });
+    expect((await server.inject({ url: location, headers })).json().task.state).toBe('running');
+    expect((await record(headers, 'failed')).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
+    const taskId = accepted.json().taskId as string;
+    data.prepare(`INSERT INTO task_controls(id,task_id,request_id,request_hash,binding_hash,kind,state)
+      VALUES ('pending-stop',?,'once','hash','binding','stop','needs_recovery')`).run(taskId);
+    expect((await record()).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
+    data.exec("DELETE FROM task_controls WHERE id='pending-stop'");
+    expect((await record()).json()).toEqual({ state: 'completed' });
+    expect((await record()).json()).toEqual({ state: 'completed' });
+    upstreamTerminalAt = new Date(Date.parse(upstreamTerminalAt) - 1).toISOString();
+    expect((await record()).json().code).toBe('TASK_OUTCOME_UNVERIFIED');
+    expect((await server.inject({ url: location, headers })).json()).toMatchObject({
+      task: { state: 'completed' }, sdkUsage: { nanoAiu: 0, premiumRequests: 0.125 },
+    });
+    expect((await server.inject({ url: '/api/active-sessions', headers })).json().sessions).toEqual([]);
+    expect(data.prepare('SELECT archived_at FROM tasks WHERE id=?').get(taskId)).toEqual({ archived_at: null });
     expect(probe).toHaveBeenCalledOnce();
     expect(probe.mock.calls[0]?.[0]).toBe('ghu_copilot');
     expect(probe.mock.calls[0]?.[1]).toMatchObject({
@@ -272,6 +307,9 @@ it.each([false, true])('signs in, connects and syncs through the app (supervised
     });
     expect((await server.inject('/api/tasks/fixture-task')).statusCode).toBe(401);
     if (!enabled) expect((await server.inject({ url: '/api/tasks/fixture-task/cloud-status', headers })).json().code)
+      .toBe('CAPABILITY_UNAVAILABLE');
+    if (!enabled) expect((await server.inject({ method: 'POST', url: '/api/tasks/fixture-task/record-cloud-outcome', headers,
+      payload: { expectedState: 'completed' } })).json().code)
       .toBe('CAPABILITY_UNAVAILABLE');
     expect(transport).toHaveBeenCalledTimes(7);
     const attempt = (repoId: string, requestHeaders = headers) => server.inject({

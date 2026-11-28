@@ -213,6 +213,11 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
     const { principal, ports } = await command(request, { kind: 'archive', taskId });
     return accepted(reply, 'operations', await ports.operations.archive(principal, taskId));
   });
+  route('POST', '/api/tasks/:id/record-cloud-outcome', { params: 'byId', body: 'recordCloudOutcome' }, async (request, reply) => {
+    const { principal, ports } = await command(request);
+    if (!ports.tasks.recordCloudOutcome) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
+    return json(reply, s.recordedCloudOutcome, await ports.tasks.recordCloudOutcome(principal, request.params.id, request.body));
+  });
   route('POST', '/api/connections/:id/remove', { params: 'byId', body: 'confirmed' }, async (request, reply) => {
     const connectionId = request.params.id;
     const { principal, ports } = await command(request, { kind: 'remove', connectionId });

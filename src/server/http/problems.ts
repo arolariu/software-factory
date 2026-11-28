@@ -18,6 +18,7 @@ const problems = {
   STALE_QUESTION: [409, 'Question is no longer pending'],
   TASK_ALREADY_ACTIVE: [409, 'Task already active'],
   TASK_OPERATION_PENDING: [409, 'A task operation is still pending'],
+  TASK_OUTCOME_UNVERIFIED: [409, 'The terminal task outcome could not be verified'],
   RATE_LIMITED: [429, 'Too many requests'],
   SETUP_CODE_INVALID: [400, 'Setup could not be verified'],
   SETUP_ALREADY_CLAIMED: [409, 'Factory setup is already complete'],

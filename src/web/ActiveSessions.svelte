@@ -27,6 +27,7 @@
   let cloudNote = $state('');
   let cloudUsage = $state<ApiDto<'cloudTaskStatus'>['usage']>();
   let checkingCloud = $state(false);
+  let recordableOutcome = $state<ApiDto<'cloudTaskStatus'>['recordableOutcome']>();
   const detailVersion = requestVersion();
   const report = readReport<'activeSessions'>('/api/active-sessions', 'Active Sessions are unavailable. Try again later.', closeTask);
   const results = $derived(report.data);
@@ -41,6 +42,7 @@
     cloudNote = '';
     cloudUsage = undefined;
     checkingCloud = false;
+    recordableOutcome = undefined;
   }
 
   function closeTask() {
@@ -82,12 +84,15 @@
     checkingCloud = true;
     cloudNote = 'Checking GitHub status...';
     cloudUsage = undefined;
+    recordableOutcome = undefined;
     try {
-      const { state, usage } = await readPortal<ApiDto<'cloudTaskStatus'>>(`/api/tasks/${encodeURIComponent(id)}/cloud-status`, report.signal);
+      const { state, usage, recordableOutcome: outcome } = await readPortal<ApiDto<'cloudTaskStatus'>>(
+        `/api/tasks/${encodeURIComponent(id)}/cloud-status`, report.signal);
       if (!detailVersion.current(version)) return;
       const label = cloudLabels.get(state ?? '');
       cloudNote = label ? `GitHub status: ${label}` : cloudUnavailable;
       cloudUsage = usage;
+      recordableOutcome = outcome;
     } catch (error) {
       if (!report.clearAccess(error) && detailVersion.current(version)) cloudNote = cloudUnavailable;
     } finally {
@@ -95,6 +100,28 @@
     }
   }
 
+  async function recordOutcome(id: string) {
+    const expectedState = recordableOutcome;
+    if (!expectedState) return;
+    const version = detailVersion.next();
+    checkingCloud = true;
+    recordableOutcome = undefined;
+    cloudNote = 'Verifying the GitHub outcome...';
+    cloudUsage = undefined;
+    try {
+      const { csrfToken } = await readPortal<ApiDto<'csrf'>>('/api/auth/csrf', report.signal);
+      if (!detailVersion.current(version)) return;
+      await readPortal<ApiDto<'recordedCloudOutcome'>>(`/api/tasks/${encodeURIComponent(id)}/record-cloud-outcome`, report.signal, {
+        method: 'POST', headers: { 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedState }),
+      });
+      if (detailVersion.current(version)) await report.refresh();
+    } catch (error) {
+      if (!report.clearAccess(error) && detailVersion.current(version)) cloudNote = 'Outcome not recorded. Check GitHub status again.';
+    } finally {
+      if (detailVersion.current(version)) checkingCloud = false;
+    }
+  }
 </script>
 
 <ReportFrame title="Active Sessions" {report}>
@@ -154,6 +181,9 @@
                     {#if detail.cloudStatusAvailable}
                       <div class="cloud-status">
                         <button type="button" disabled={checkingCloud} onclick={() => void checkCloudStatus(session.taskId)}>Check GitHub status</button>
+                        {#if recordableOutcome}
+                          <button type="button" onclick={() => void recordOutcome(session.taskId)}>Record outcome</button>
+                        {/if}
                         <span class="muted" role="status">{cloudNote}</span>
                         {#if cloudUsage}
                           <span class="muted">{`GitHub-reported usage: ${cloudUsage.amount} ${usageLabels.get(cloudUsage.unit)}`}</span>

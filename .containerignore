@@ -47,6 +47,7 @@ src/server/persistence/**
 !src/server/persistence/009-task-sdk-usage.sql
 !src/server/persistence/010-task-start-options.sql
 !src/server/persistence/task-usage.ts
+!src/server/persistence/task-outcomes.ts
 !src/server/tasks/
 src/server/tasks/**
 !src/server/tasks/supervised-launch.ts
