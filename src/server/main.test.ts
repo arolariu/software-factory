@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
@@ -163,15 +163,43 @@ it.each(['nfs', 'nfs4', 'cifs', 'fuse.sshfs'])('rejects container storage on %s 
   expect(() => verifyContainerData('/data', 0o700, mount)).toThrow();
 });
 
-it.each(['FACTORY_GITHUB_CLIENT_ID', 'FACTORY_GITHUB_PORTAL_CLIENT_ID'])('starts managed sign-in with %s and removes CLI shutdown handlers', async (key) => {
+async function unusedPort() {
   const socket = createServer();
   await new Promise<void>((resolve) => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address();
   if (!port || typeof port === 'string') throw new Error('Expected a TCP port.');
   await new Promise<void>((resolve, reject) => socket.close((error) => error ? reject(error) : resolve()));
+  return String(port.port);
+}
+
+it.each(['default', 'explicit'] as const)('starts the native CLI on loopback with the %s data directory', async (mode) => {
+  rmdirSync(dataDir);
+  const options: NodeJS.ProcessEnv = { PORT: await unusedPort() };
+  const expected = mode === 'default' ? dataDir : join(root, 'chosen-data');
+  if (mode === 'explicit') {
+    mkdirSync(expected);
+    options['FACTORY_DATA_DIR'] = expected;
+  }
+  const previous = process.exitCode;
+  const server = await runCli(options, [], artifactDir);
+  try {
+    expect(server).toBeDefined();
+    if (!server) return;
+    expect(new URL(server.address).hostname).toBe('127.0.0.1');
+    expect(await (await fetch(`${server.address}/healthz`)).json()).toEqual({ status: 'ok' });
+    expect(existsSync(join(expected, 'factory.sqlite'))).toBe(true);
+    if (mode === 'explicit') expect(existsSync(dataDir)).toBe(false);
+  } finally {
+    process.exitCode = previous;
+    await server?.close();
+  }
+});
+
+it.each(['FACTORY_GITHUB_CLIENT_ID', 'FACTORY_GITHUB_PORTAL_CLIENT_ID'])('starts managed sign-in with %s and removes CLI shutdown handlers', async (key) => {
+  const port = await unusedPort();
   const before = process.listenerCount('SIGTERM');
   const server = await runCli({
-    FACTORY_DATA_DIR: dataDir, PORT: String(port.port), FACTORY_MANAGEMENT_MODE: '1',
+    FACTORY_DATA_DIR: dataDir, PORT: port, FACTORY_MANAGEMENT_MODE: '1',
     FACTORY_PUBLIC_ORIGIN: 'https://factory.example', [key]: 'factory-client',
   }, [], artifactDir);
   if (!server) throw new Error('Expected a running server');

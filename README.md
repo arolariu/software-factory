@@ -4,18 +4,17 @@ A light, desktop-first portal for repository triage and Copilot task tracking. T
 
 ## Run locally
 
-Use Bash (Git Bash on Windows), Node **24.22.3**, npm **12.2.3**, and the approved npm registry configured outside the repository. Install scripts are disabled for this dependency set; the pinned SQLite package bundles its native binary.
+Use Node **24.22.3**, npm **12.2.3**, and the approved npm registry configured outside the repository. The build needs Bash (Git Bash on Windows); if running these commands from PowerShell, make sure Git Bash is available ahead of the Windows WSL `bash.exe` shim on `PATH`. Use `--ignore-scripts` to avoid native install hooks; the pinned SQLite package bundles its native binary.
 
-```bash
+```text
 npm ci --ignore-scripts --strict-peer-deps
 npm run check
 npm test
 npm run build
-mkdir -p data
-FACTORY_DATA_DIR="$PWD/data" npm start
+npm start
 ```
 
-Open `http://localhost:3000`. `/healthz` checks local schema readiness and `/api/build` returns artifact metadata (null fields for an unstamped local build). Use a private, writable data directory; SQLite stores its WAL and SHM alongside the database.
+Open `http://127.0.0.1:3000`. With no identity configuration, `npm start` listens on loopback and creates the ignored `data` directory beside `dist` on first run. Set `FACTORY_DATA_DIR` to use a different existing private, writable directory, or set `PORT` to change the port. Container and configured identity deployments retain their `/data` default. `/healthz` checks schema readiness; `/api/build` returns artifact metadata.
 
 ### Configure delegated identity
 

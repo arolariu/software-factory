@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { accessSync, constants, readdirSync, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp, type BuildAppOptions, type BuildMetadata } from './build-app.js';
@@ -19,6 +19,7 @@ interface StartupOptions {
   artifactDir: string;
   port: number;
   container?: boolean;
+  loopback?: boolean;
   logger?: boolean;
   identity?: IdentityFiles;
   management?: ManagementOptions;
@@ -118,7 +119,7 @@ export async function startServer(options: StartupOptions) {
       ...(management && { management }),
       ...(allowRequest && { allowRequest }),
     });
-    const address = await app.listen({ host: desktop || cloudTrial ? '127.0.0.1' : '0.0.0.0', port });
+    const address = await app.listen({ host: desktop || cloudTrial || options.loopback ? '127.0.0.1' : '0.0.0.0', port });
     auth?.start();
     management?.start();
     const close = async () => {
@@ -151,9 +152,12 @@ export async function startServer(options: StartupOptions) {
 
 export async function runCli(env = process.env, args = process.argv, artifactDir = fileURLToPath(new URL('../', import.meta.url))) {
   try {
-    const dataDir = env['FACTORY_DATA_DIR'] ?? '/data';
     const configFile = env['FACTORY_IDENTITY_CONFIG_FILE'];
     const managed = env['FACTORY_MANAGEMENT_MODE'] === '1';
+    const container = args.includes('--container');
+    const local = !container && !managed && configFile === undefined;
+    const configuredDir = env['FACTORY_DATA_DIR'];
+    const dataDir = configuredDir ?? (local ? resolve(artifactDir, '..', 'data') : '/data');
     const publicOrigin = env['FACTORY_PUBLIC_ORIGIN'] ?? '';
     const githubClientId = env['FACTORY_GITHUB_CLIENT_ID'] ?? env['FACTORY_GITHUB_PORTAL_CLIENT_ID'];
     if (args[2] === 'setup-code') {
@@ -169,11 +173,14 @@ export async function runCli(env = process.env, args = process.argv, artifactDir
       console.log('Owner verified. Start Factory with the replacement Client ID and sign in again.');
       return undefined;
     }
+    const port = parsePort(env['PORT'] ?? '3000');
+    if (local && configuredDir === undefined) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     const server = await startServer({
       dataDir,
-      port: parsePort(env['PORT'] ?? '3000'),
+      port,
       artifactDir,
-      container: args.includes('--container'),
+      container,
+      loopback: local,
       logger: true,
       ...(managed && { management: {
         publicOrigin,
