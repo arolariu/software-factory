@@ -9,7 +9,7 @@ import { isLaunchChoice, launchPreferences } from './launch-preferences.js';
 
 export type CloudConnection = RepositoryAccess & { identityId: string; subject: string };
 export type TrialTarget = { repoId: string; ownerId: string };
-export type CloudAccount = { id: string; subject: string; identityId: string };
+export type CloudAccount = { id: string; subject: string; identityId: string; credentialVersion: string };
 interface AdmissionPorts {
   resolveConnection(id: string, requester: Requester): CloudConnection | undefined;
   resolveAccount(requester: Requester, id?: string): CloudAccount | undefined;
@@ -49,6 +49,7 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
     const { binding, account, connection } = candidate;
     const current = local(requester, binding.connectionId, account.id);
     return current !== undefined && sameBinding(binding, current.binding) && current.connection.grantId === connection.grantId &&
+      current.account.credentialVersion === account.credentialVersion &&
       current.connection.target.scope === connection.target.scope && current.connection.target.name === connection.target.name;
   }
 
@@ -97,16 +98,21 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
     let used = false;
     return {
       binding: current.binding,
+      stillAuthorized: () => stillBound(requester, current),
       async dispatch(claim: Readonly<StartClaim>) {
         if (used || startClaimKey(claim) !== key) throw new ApiFailure('ACCESS_UNVERIFIED');
         used = true;
         signal?.throwIfAborted();
         if (!stillBound(requester, current)) throw new ApiFailure('ACCESS_UNVERIFIED');
         const { connection, credential } = current;
+        const verifyCredential = () => {
+          if (!stillBound(requester, current)) throw new ApiFailure('ACCESS_UNVERIFIED');
+        };
         const repository = { owner: connection.target.scope, name: connection.target.name };
         const issueUrl = `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${claim.workItemKey}`;
         const result = await ports.probe(credential.token, {
           requestedSessionId: claim.requestedSessionId, expectedLogin: credential.login, repository, turnId: claim.startRequestId,
+          verifyCredential,
           ...current.overrides,
           prompt: `Review the issue at ${issueUrl} and propose an implementation and tests. Do not edit files, run shell commands, or create branches, commits, issues, or pull requests.`,
         }, signal);
@@ -139,6 +145,7 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
     async authorize(requester, connectionId, input, signal?: AbortSignal) {
       return (await verify(requester, connectionId, input, signal))?.binding;
     },
+    canReplay: (requester, connectionId, accountId) => !!local(requester, connectionId, accountId),
     prepare,
     async launch(claim, signal?: AbortSignal) {
       const current = await prepare(claim, signal);

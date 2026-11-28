@@ -66,7 +66,8 @@ export async function readCloudTaskEvidence(target: StatusTarget, token: string,
     });
     if (!response.ok) return unavailable;
     const body: unknown = await response.json();
-    if (!Value.Check(statusProof, body) || body.id !== target.sessionId || body.html_url !== target.sessionUrl ||
+    if (!Value.Check(statusProof, body) || body.id !== target.sessionId ||
+      body.html_url !== `https://github.com/${owner}/${repo}/copilot/tasks/${id}` ||
       String(body.owner.id) !== target.ownerId || String(body.creator.id) !== target.ownerId ||
       String(body.repository.id) !== target.repositoryId) return unavailable;
     const session = linkedSession(body.sessions, target);

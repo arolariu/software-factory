@@ -271,7 +271,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       const person = db.prepare<[string, string], { subject: string }>(
         "SELECT subject FROM identities WHERE id=? AND user_id=? AND provider='github' AND issuer='github.com'",
       ).get(grant.identity_id, requester.id);
-      return person && { id, identityId: grant.identity_id, subject: person.subject };
+      return person && { id, identityId: grant.identity_id, subject: person.subject, credentialVersion: sha256Hex(grant.credential_ref) };
     },
     async readCopilotToken(accountId: string, requester: Requester) {
       const grant = getGrant(accountId, requester.id);

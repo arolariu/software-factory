@@ -3,7 +3,7 @@ import { createGitHubCloudAdmission, type CloudConnection } from './github-cloud
 
 const requester = { id: 'alice' };
 const approved = { repoId: '81', ownerId: '42' };
-const account = { id: 'copilot', subject: '42', identityId: 'git-user' };
+const account = { id: 'copilot', subject: '42', identityId: 'git-user', credentialVersion: 'original' };
 const connection: CloudConnection = {
   id: 'conn', repoId: 'local-repo', generation: 1, grantId: 'repository-grant', provider: 'github', identityId: 'git-user',
   repositoryId: '81', scope: '42', subject: '42', target: { host: 'github.com', scope: 'owner', project: null, name: 'disposable' },
@@ -124,6 +124,7 @@ it('reverifies a bound claim before dispatch, sends no issue body, and retains m
   expect(probe).toHaveBeenCalledExactlyOnceWith('ghu_fixture', {
     requestedSessionId: 'exact-session', expectedLogin: 'owner', repository: { owner: 'owner', name: 'disposable' },
     turnId: 'start-once', prompt: expect.stringContaining('https://github.com/owner/disposable/issues/17'),
+    verifyCredential: expect.any(Function),
   }, undefined);
   expect(probe.mock.calls[0]?.[1]).toMatchObject({ prompt: expect.stringContaining('Do not edit') });
 });
@@ -174,8 +175,18 @@ it('discards the receipt if the Copilot grant is revoked during the remote call'
     resolveAccount.mockReturnValue(undefined);
     return { sessionId: 'exact-session', usage: { nanoAiu: 2, premiumRequests: 1 } };
   });
+
   await expect(adapter.launch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
   expect(probe).toHaveBeenCalledOnce();
+});
+
+it('rejects same-account credential replacement between prepare and SDK dispatch', async () => {
+  const { adapter, probe, resolveAccount } = fixture();
+  const claim = { ...binding, ...input, taskId: 'task', requesterId: 'alice', requestedSessionId: 'exact-session' };
+  const prepared = (await adapter.prepare(claim))!;
+  resolveAccount.mockReturnValue({ ...account, credentialVersion: 'replacement' });
+  await expect(prepared.dispatch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
+  expect(probe).not.toHaveBeenCalled();
 });
 
 it('binds a prepared dispatch to one exact claim and rejects revocation before contacting the SDK', async () => {

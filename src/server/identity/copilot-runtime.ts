@@ -29,24 +29,31 @@ export const createSdk: RuntimeFactory<CopilotRuntime> = async (options) => {
 };
 
 export async function withCopilotRuntime<R extends Runtime, Result>(token: string,
-  create: RuntimeFactory<R>, read: (runtime: R) => Promise<Result>, timeoutMs = 20_000) {
-  using directory = mkdtempDisposableSync(join(tmpdir(), 'factory-copilot-'));
-  const { PATH, SystemRoot, TEMP, TMP } = process.env;
-  const client = await create({
-    gitHubToken: token, useLoggedInUser: false, mode: 'empty',
-    workingDirectory: directory.path, baseDirectory: directory.path,
-    env: { PATH, SystemRoot, TEMP, TMP }, logLevel: 'none',
-  });
+  create: RuntimeFactory<R>, read: (runtime: R) => Promise<Result>, timeoutMs = 20_000, startTimeoutMs = 20_000) {
+  const directory = mkdtempDisposableSync(join(tmpdir(), 'factory-copilot-'));
+  let client: R | undefined;
+  try {
+    const { PATH, SystemRoot, TEMP, TMP } = process.env;
+    client = await create({
+      gitHubToken: token, useLoggedInUser: false, mode: 'empty',
+      workingDirectory: directory.path, baseDirectory: directory.path,
+      env: { PATH, SystemRoot, TEMP, TMP }, logLevel: 'none',
+    });
+    await deadline(client.start(), Math.min(startTimeoutMs, timeoutMs));
+    return await deadline(read(client), timeoutMs);
+  } finally {
+    try { if (client) await deadline(client.forceStop(), 5_000); }
+    catch { console.warn('Copilot runtime cleanup could not be confirmed.'); }
+    try { directory.remove(); }
+    catch { console.warn('Copilot runtime temporary directory could not be removed.'); }
+  }
+}
+
+async function deadline<T>(pending: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      client.start().then(() => read(client)),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Copilot access check timed out.')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    await client.forceStop();
-  }
+    return await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Copilot access check timed out.')), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
 }

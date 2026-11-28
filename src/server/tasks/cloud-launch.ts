@@ -18,12 +18,13 @@ type CloudRequest = {
   prompt: string;
   model?: string;
   reasoningEffort?: string;
+  verifyCredential?: () => void;
 };
 type Deny = { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
 export interface CloudLaunchClient {
   getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string; login?: string }>;
   createSession(config: {
-    sessionId: string; cloud: { repository: CloudRequest['repository'] }; onPermissionRequest: () => Deny;
+    sessionId: string; cloud: { repository: CloudRequest['repository'] }; availableTools: []; onPermissionRequest: () => Deny;
     model?: string; reasoningEffort?: string;
   }): Promise<{
     sessionId: string;
@@ -60,9 +61,10 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
       throw new ApiFailure('ACCESS_UNVERIFIED');
     }
     signal.throwIfAborted();
+    request.verifyCredential?.();
     const session = await Promise.race([
       client.createSession({
-        sessionId: request.requestedSessionId, cloud: { repository: request.repository },
+        sessionId: request.requestedSessionId, cloud: { repository: request.repository }, availableTools: [],
         ...(request.model !== undefined && { model: request.model }),
         ...(request.reasoningEffort !== undefined && { reasoningEffort: request.reasoningEffort }),
         onPermissionRequest: () => ({ kind: 'denied-no-approval-rule-and-could-not-request-from-user' }),
@@ -77,6 +79,7 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
     let rootTurn: string | undefined;
     let sessionUrl: string | undefined;
     let sending = false;
+    let deliveryConfirmed = false;
     const observe = ({ type, data, agentId }: CloudEvent) => {
       if (type === 'session.start' && data?.producer === 'copilot-agent') ready.resolve();
       if (type === 'session.info' && data?.infoType === 'remote' && !agentId) {
@@ -84,6 +87,7 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
       }
       if (!sending || !data || agentId || data.parentToolCallId) return;
       if (type === 'user.message' && data.clientTurnId === request.turnId) {
+        deliveryConfirmed = true;
         interaction ??= data.interactionId;
         consumed.resolve();
       } else if (type === 'assistant.turn_start' && interaction && data.interactionId === interaction) {
@@ -99,10 +103,14 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
     })).catch(() => undefined);
     await Promise.race([ready.promise, cancel.promise]);
     signal.throwIfAborted();
+    request.verifyCredential?.();
     sending = true;
-    await Promise.race([session.send({ prompt: request.prompt, clientTurnId: request.turnId }), cancel.promise]);
-    await Promise.race([consumed.promise, cancel.promise]);
-    signal.throwIfAborted();
+    const send = session.send({ prompt: request.prompt, clientTurnId: request.turnId });
+    try {
+      await Promise.race([consumed.promise, send.then(() => consumed.promise), cancel.promise]);
+    } catch (error) {
+      if (!deliveryConfirmed) throw error;
+    }
     const usage = sample ? await sampleCloudUsage(() => session.rpc.usage.getMetrics(), finished.promise, signal) : null;
     return { sessionId: session.sessionId, usage, ...(sessionUrl && { sessionUrl }) };
   } finally {

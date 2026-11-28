@@ -100,6 +100,9 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
     ${projection} WHERE t.requester_id=? AND t.connection_id=? AND t.state NOT IN ('completed','stopped','failed')
     ORDER BY t.created_at DESC,t.id ASC
   `);
+  const activeForIssue = db.prepare<[string, string], { id: string; requester_id: string; connection_id: string }>(`
+    SELECT id, requester_id, connection_id FROM tasks WHERE repo_id=? AND work_item_key=?
+      AND state NOT IN ('completed','stopped','failed') LIMIT 1`);
 
   function requireConnection(requester: Requester, id: string) {
     const connection = connections.all(requester.id).find((row) => row.connection_id === id);
@@ -119,6 +122,11 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
   }
 
   return {
+    issueTask: db.transaction((requester: Requester, connectionId: string, key: string) => {
+      const { id } = requireConnection(requester, connectionId);
+      const row = activeForIssue.get(id, key);
+      return { busy: !!row, taskId: row?.requester_id === requester.id && row.connection_id === connectionId ? row.id : null };
+    }),
     tasks: db.transaction((requester: Requester, id: string, query: ApiDto<'taskQuery'>): ApiDto<'tasks'> => {
       const connection = requireConnection(requester, id);
       const scope = JSON.stringify(['active-tasks', requester.id, id, connection.generation]);

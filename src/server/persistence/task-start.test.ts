@@ -181,7 +181,7 @@ it('does not launch if fresh admission no longer verifies the queued account and
   allowed = false;
   await launcher.runNext();
   expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
-    .toEqual({ state: 'needs_auth', sdk_session_id: null });
+    .toEqual({ state: 'failed', sdk_session_id: null });
 });
 
 it('does not fall back to a second launch path when prepared admission denies the task', async () => {
@@ -195,7 +195,7 @@ it('does not fall back to a second launch path when prepared admission denies th
   expect(prepare).toHaveBeenCalledOnce();
   expect(authorize).toHaveBeenCalledOnce();
   expect(launch).not.toHaveBeenCalled();
-  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'needs_auth' });
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'failed' });
 });
 
 it('denies a reservation without a verified grant and defers queued work when the worker is stopped', async () => {
@@ -217,11 +217,12 @@ it('denies a reservation without a verified grant and defers queued work when th
   expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'queued' });
   scope = 'different-repository';
   await launcher.runNext();
-  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'needs_auth' });
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'failed' });
 });
 
 it('holds a task whose pre-dispatch verification failed without starving the next queued task', async () => {
   const db = fixture();
+  let at = 1;
   let dispatch = false;
   const seen: string[] = [];
   const launcher = createSupervisedLaunch(db, {
@@ -233,7 +234,7 @@ it('holds a task whose pre-dispatch verification failed without starving the nex
       seen.push(claim.workItemKey);
       return { claim, sessionId: 'remote-8' };
     },
-  }, () => 'valid');
+  }, () => 'valid', () => at);
   const held = await launcher.reserve(requester, binding.connectionId, input);
   const allowed = await launcher.reserve(requester, binding.connectionId, { ...input, workItemKey: '8', startRequestId: 'next' });
   db.prepare('UPDATE tasks SET created_at=1 WHERE id=?').run(held.taskId);
@@ -242,8 +243,44 @@ it('holds a task whose pre-dispatch verification failed without starving the nex
   await launcher.runNext();
   await launcher.runNext();
   expect(seen).toEqual(['8']);
-  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(held.taskId)).toEqual({ state: 'needs_auth' });
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(held.taskId)).toEqual({ state: 'queued' });
   expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(allowed.taskId)).toEqual({ state: 'running' });
+  at += 1000;
+  await launcher.runNext();
+  at += 2000;
+  await launcher.runNext();
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(held.taskId)).toEqual({ state: 'failed' });
+  expect(seen).toEqual(['8']);
+});
+
+it('replays a durable receipt without rechecking mutable upstream admission', async () => {
+  const db = fixture();
+  const authorize = vi.fn(async () => binding);
+  let permitted: 'valid' | 'denied' = 'valid';
+  const launcher = createSupervisedLaunch(db, { authorize, launch: vi.fn() }, () => permitted);
+  const accepted = await launcher.reserve(requester, binding.connectionId, input);
+  authorize.mockRejectedValue(new Error('provider is down'));
+  await expect(launcher.reserve(requester, binding.connectionId, input)).resolves.toEqual(accepted);
+  await expect(launcher.reserve(requester, binding.connectionId, { ...input, workItemKey: '8' })).rejects.toThrow('REQUEST_ID_REUSED');
+  expect(authorize).toHaveBeenCalledOnce();
+  permitted = 'denied';
+  await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('ACCESS_DENIED');
+});
+
+it('keeps confirmed delivery when shutdown interrupts only usage sampling', async () => {
+  const db = fixture();
+  const stop = new AbortController();
+  const launcher = createSupervisedLaunch(db, {
+    authorize: async () => binding,
+    async launch(claim) {
+      stop.abort();
+      return { claim, sessionId: 'verified-remote' };
+    },
+  }, () => 'valid');
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  await launcher.runNext(stop.signal);
+  expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
+    .toEqual({ state: 'running', sdk_session_id: 'verified-remote' });
 });
 
 it.each(['wrong-receipt', 'invalid-session-id', 'connection-changed', 'access-lost', 'runtime-error', 'interrupted'] as const)(
@@ -258,7 +295,7 @@ it.each(['wrong-receipt', 'invalid-session-id', 'connection-changed', 'access-lo
       async launch(claim) {
         calls++;
         if (fault === 'runtime-error') throw new Error('Sensitive provider failure');
-        if (fault === 'interrupted') controller.abort();
+        if (fault === 'interrupted') { controller.abort(); throw new Error('Unconfirmed'); }
         if (fault === 'connection-changed') db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
         if (fault === 'access-lost') access = 'denied';
         return {

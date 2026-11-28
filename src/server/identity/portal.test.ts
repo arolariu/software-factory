@@ -58,7 +58,7 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
       statusReads(remote);
       if (deferredStatus) return deferredStatus;
       return Response.json({
-        id: remote, html_url: `https://github.com/copilot/tasks/${remote}`, state: 'completed',
+        id: remote, html_url: `https://github.com/me/disposable/copilot/tasks/${remote}`, state: 'completed',
         creator_type: 'user', creator: { id: upstreamTaskCreator }, owner: { id: 42 }, repository: { id: 91 },
         sessions: [{
           id: remote, task_id: remote, user: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
@@ -144,6 +144,9 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     expect(transport.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/user')).toHaveLength(2);
     expect(transport.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/repositories/91/issues/17')).toHaveLength(2);
     expect(inspect).toHaveBeenCalledTimes(2);
+    expect((await server.inject({ url: `/api/connections/${connection.id}/issues/17`, headers })).json()).toMatchObject({
+      issue: { taskId: accepted.json().taskId, launch: { available: false } },
+    });
     expect(statusReads).not.toHaveBeenCalled();
     expect((await server.inject(statusPath)).statusCode).toBe(401);
     expect((await server.inject({ url: '/api/tasks/unrelated/cloud-status', headers })).statusCode).toBe(404);
@@ -166,7 +169,7 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     data.prepare('UPDATE delegated_grants SET revoked_at=1 WHERE id=?').run(account.id);
     const id = probe.mock.calls[0]?.[1].requestedSessionId;
     pending.resolve(Response.json({
-      id, html_url: `https://github.com/copilot/tasks/${id}`, state: 'completed',
+      id, html_url: `https://github.com/me/disposable/copilot/tasks/${id}`, state: 'completed',
       creator_type: 'user', creator: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
       sessions: [{ id, task_id: id, user: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
         state: 'completed', completed_at: new Date().toISOString() }],

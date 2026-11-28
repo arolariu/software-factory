@@ -51,11 +51,25 @@ it('waits for the remote worker and a matching consumed-turn event, not the SDK 
   expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
   expect(listeners.size).toBe(0);
   expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
-    sessionId: request.requestedSessionId, cloud: { repository: request.repository }, model: 'm1', reasoningEffort: 'low',
+    sessionId: request.requestedSessionId, cloud: { repository: request.repository }, availableTools: [],
+    model: 'm1', reasoningEffort: 'low',
   }));
   expect(client.createSession.mock.lastCall?.[0].onPermissionRequest()).toEqual({
     kind: 'denied-no-approval-rule-and-could-not-request-from-user',
   });
+});
+
+it('keeps exact remote delivery when shutdown interrupts only the optional usage sample', async () => {
+  const { client, emit, session, listeners } = fixture();
+  const stop = new AbortController();
+  const pending = probeCloudTask(client, request, stop.signal);
+  await vi.waitFor(() => expect(listeners.size).toBe(1));
+  emit({ type: 'session.start', data: { producer: 'copilot-agent' } });
+  await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
+  emit({ type: 'user.message', data: { clientTurnId: request.turnId } });
+  stop.abort();
+  await expect(pending).resolves.toEqual({ sessionId: request.requestedSessionId, usage: null });
+  expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
 });
 
 it('can recover a readiness event emitted before subscription using the session event history', async () => {

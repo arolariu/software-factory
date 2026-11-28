@@ -125,7 +125,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
     const account = identity.copilotLaunchAccount(requester, binding.copilotAccountId);
     if (!connection || connection.repositoryId !== trialTarget.repoId || connection.scope !== trialTarget.ownerId ||
       account?.identityId !== connection.identityId || account.subject !== trialTarget.ownerId) return undefined;
-    return { binding, target: {
+    return { binding, credentialVersion: account.credentialVersion, target: {
       sessionId: binding.sessionId, sessionUrl, owner: connection.target.scope, repository: connection.target.name,
       repositoryId: trialTarget.repoId, ownerId: trialTarget.ownerId,
     } };
@@ -178,8 +178,9 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
           if (!launchRuntime?.describe || result.issue.state !== 'open') return result;
           const connection = identity.repositoryContext(id, requester);
           if (connection?.provider !== 'github' || connection.target.host !== 'github.com') return result;
-          const { launch } = taskOptions(requester, id, {});
-          return { ...result, issue: { ...result.issue, launch } };
+          const association = taskReads.issueTask(requester, id, key);
+          const launch = association.busy ? { available: false as const, reasonCode: 'CAPABILITY_UNAVAILABLE' } : taskOptions(requester, id, {}).launch;
+          return { ...result, issue: { ...result.issue, taskId: association.taskId, launch } };
         },
         pullRequests: repositories.pullRequests, checks: repositories.checks, closeIssue: disabled,
       },

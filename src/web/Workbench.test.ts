@@ -192,12 +192,14 @@ it.each(['eligibility', 'model catalog'] as const)('clears task controls and rep
 it('retries an uncertain start with the same request ID and retains the queued receipt when reopening the issue', async () => {
   const first = Promise.withResolvers<Response>();
   const starts: RequestInit[] = [];
+  let state = 'queued';
   browse('/', (url, init) => {
     if (url === '/api/connections') return Response.json({ items: [repo] });
     if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
     if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
     if (url.endsWith('/task-options')) return Response.json(launchOptions);
     if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url === '/api/tasks/task-42') return Response.json({ task: { taskId: 'task-42', state } });
     if (url.endsWith('/tasks') && init?.method === 'POST') {
       starts.push(init);
       return starts.length === 1 ? first.promise : Response.json({ taskId: 'task-42', state: 'queued' }, { status: 202 });
@@ -223,9 +225,10 @@ it('retries an uncertain start with the same request ID and retains the queued r
   });
   expect(starts[0]?.headers).toMatchObject({ 'X-CSRF-Token': 'token' });
   expect(target.textContent).not.toContain('private');
+  state = 'needs_recovery';
   await press('Document startup');
   await press('Document startup');
-  await vi.waitFor(() => expect(target.textContent).toContain('Task queued'));
+  await vi.waitFor(() => expect(target.textContent).toContain('Task needs recovery'));
   expect([...target.querySelectorAll('button')].map((e) => e.textContent?.trim())).not.toContain('Start task');
 });
 
@@ -327,6 +330,8 @@ it.each([
   await press('Start task');
   await vi.waitFor(() => expect(target.textContent).toContain(message));
   expect(target.textContent).not.toContain('Retry start');
+  await press('Refresh launch options');
+  await expect.element(page.getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
 });
 
 it('cannot restore a launch receipt after repository access is lost while the request is in flight', async () => {

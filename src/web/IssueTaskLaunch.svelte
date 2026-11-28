@@ -1,10 +1,12 @@
 <script module lang="ts">
-  import type { StartTask } from '../shared/api/schemas.js';
+  import type { ApiDto, StartTask } from '../shared/api/schemas.js';
 
   export type StartAttempt = {
     input: StartTask;
     state: 'starting' | 'retry' | 'queued' | 'blocked';
     note?: string;
+    taskId?: string;
+    taskState?: ApiDto<'task'>['task']['state'];
   };
 </script>
 
@@ -12,7 +14,6 @@
   import { onMount } from 'svelte';
   import type { SvelteMap } from 'svelte/reactivity';
   import { opaqueIdSegment } from '../shared/api/opaque-id.js';
-  import type { ApiDto } from '../shared/api/schemas.js';
   import { problemCode, readPortal } from './portal-read.js';
 
   let { issue, connectionId, attempts, lifetime, onAccessLost }: {
@@ -39,11 +40,56 @@
   let modelId = $state('');
   let effort = $state('');
   const selectedModel = $derived(models?.find((model) => model.id === modelId));
+  const trackedId = $derived(attempt?.taskId ?? issue.taskId);
+  let durable = $state<{ id: string; value: ApiDto<'task'> }>();
+  const trackedTask = $derived(durable?.id === trackedId ? durable?.value : undefined);
+  let taskError = $state('');
+  const terminal = (state: string) => ['completed', 'stopped', 'failed'].includes(state);
+  const states: Record<string, string> = {
+    queued: 'Task queued', starting: 'Task starting', running: 'Task running', waiting_input: 'Task needs your answer',
+    publishing: 'Task publishing', stopping: 'Task stopping', needs_auth: 'Task needs reauthorization',
+    needs_recovery: 'Task needs recovery', completed: 'Task completed', stopped: 'Task stopped', failed: 'Task failed',
+  };
 
   onMount(() => {
     if (issue.launch.available && issue.taskId === null && !attempts.has(scope)) void loadOptions();
     return () => panel.abort();
   });
+
+  $effect(() => {
+    const id = trackedId;
+    if (!id) return;
+    const controller = new AbortController();
+    void watchTask(id, controller.signal);
+    return () => controller.abort();
+  });
+
+  async function watchTask(id: string, signal: AbortSignal) {
+    taskError = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abort = () => clearTimeout(timer);
+    signal.addEventListener('abort', abort, { once: true });
+    const sample = async () => {
+      try {
+        const value = await readPortal<ApiDto<'task'>>(`/api/tasks/${encodeURIComponent(id)}`, signal);
+        if (signal.aborted) return;
+        if (value.task.taskId !== id) throw new Error('Unconfirmed task');
+        durable = { id, value };
+        const cached = attempts.get(scope);
+        if (cached?.taskId === id && cached.taskState !== value.task.state) {
+          attempts.set(scope, { ...cached, taskState: value.task.state });
+        }
+        taskError = '';
+        if (terminal(value.task.state)) return;
+      } catch (error) {
+        if (signal.aborted || onAccessLost(error)) return;
+        taskError = 'Task status could not be refreshed.';
+        if (problemCode(error) === 'NOT_FOUND') return;
+      }
+      timer = setTimeout(() => void sample(), 3_000);
+    };
+    await sample();
+  }
 
   async function loadOptions() {
     status = 'Checking task eligibility...';
@@ -58,6 +104,18 @@
     } catch (error) {
       if (!panel.signal.aborted && !onAccessLost(error)) status = 'Could not check task eligibility. Reopen this issue to try again.';
     }
+  }
+
+  function resetStart() {
+    attempts.delete(scope);
+    account = undefined;
+    canConfigure = false;
+    configured = false;
+    models = undefined;
+    modelId = '';
+    effort = '';
+    modelNote = '';
+    void loadOptions();
   }
 
   async function toggleModels(accountId: string) {
@@ -97,7 +155,7 @@
         body: JSON.stringify(input),
       });
       if (receipt.state !== 'queued' || typeof receipt.taskId !== 'string' || !cleanId.test(receipt.taskId)) throw new Error('Unconfirmed receipt');
-      if (attempts.get(key) === pending) attempts.set(key, { input, state: 'queued' });
+      if (attempts.get(key) === pending) attempts.set(key, { input, state: 'queued', taskId: receipt.taskId });
     } catch (error) {
       if (lifetime.aborted || onAccessLost(error) || attempts.get(key) !== pending) return;
       const code = problemCode(error);
@@ -111,14 +169,21 @@
 </script>
 
 <div class="task-launch">
-  {#if attempt?.state === 'queued'}
-    <p role="status">Task queued. <a href="/active-sessions">View Active Sessions</a></p>
-  {:else if issue.taskId !== null}
-    <p class="muted">A task is already linked to this issue.</p>
+  {#if trackedId}
+    <p role="status">{trackedTask ? states[trackedTask.task.state] : attempt?.state === 'queued'
+      ? states[attempt.taskState ?? 'queued'] : 'A task is already linked to this issue.'}</p>
+    {#if taskError}<p class="muted">{taskError}</p>{/if}
+    {#if trackedTask?.sessionUrl}<a href={trackedTask.sessionUrl} target="_blank" rel="noreferrer">View Copilot session</a>{/if}
+    {#if trackedTask && terminal(trackedTask.task.state)}
+      {#if attempt?.taskId && issue.taskId === null}
+        <button type="button" onclick={resetStart}>Refresh launch options</button>
+      {:else}<p class="muted">Reopen the issue to check new launch options.</p>{/if}
+    {/if}
   {:else if !issue.launch.available}
     <p class="muted">{unavailable}</p>
   {:else if attempt?.state === 'blocked'}
     <p role="status">{attempt.note}</p>
+    <button type="button" onclick={resetStart}>Refresh launch options</button>
   {:else if attempt?.state === 'starting'}
     <button class="primary" type="button" disabled>Starting task...</button>
   {:else if attempt?.state === 'retry'}

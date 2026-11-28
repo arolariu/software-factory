@@ -51,24 +51,37 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
       bindingFields(toClaim(stored)).every((part, index) => part === expected[index]) ? stored : undefined;
   }
 
+  const commandChoices = (overrides: ReturnType<typeof launchPreferences>) => overrides ? [overrides.model, overrides.reasoningEffort ?? null] : [];
+  const previousStart = db.prepare<[string, string], {
+    id: string; connection_id: string; request_hash: string | null; generation: number; scope: string;
+  }>(`SELECT t.id, t.connection_id, s.request_hash, s.connection_generation AS generation, t.runtime_scope AS scope
+      FROM tasks t LEFT JOIN task_starts s ON s.task_id=t.id
+      WHERE t.requester_id=? AND t.start_request_id=?`);
+  const currentBinding = db.prepare<[string, string, string, string], { generation: number }>(`
+    SELECT generation FROM repo_connections WHERE id=? AND user_id=? AND repo_id=? AND identity_id=?
+      AND retired_at IS NULL AND removal_requested_at IS NULL`);
+  function replay(requester: Requester, id: string, input: StartTask) {
+    const previous = previousStart.get(requester.id, input.startRequestId);
+    if (!previous) return undefined;
+    const choices = commandChoices(launchPreferences(input.overrides));
+    const digest = sha256Hex(JSON.stringify([id, input.workItemKey, input.copilotAccountId, ...choices]));
+    const legacy = sha256Hex(JSON.stringify([id, previous.generation, previous.scope, input.workItemKey, input.copilotAccountId, ...choices]));
+    if (previous.connection_id !== id || (previous.request_hash !== digest && previous.request_hash !== legacy)) throw new ApiFailure('REQUEST_ID_REUSED');
+    const claimed = load.get(previous.id);
+    if (!claimed) throw new ApiFailure('ACCESS_UNVERIFIED');
+    const current = currentBinding.get(id, requester.id, claimed.repoId, claimed.identityId);
+    if (!current || !eligible({ ...claimed, generation: current.generation }, requester.id)) throw new ApiFailure('ACCESS_UNVERIFIED');
+    return { taskId: previous.id, state: 'queued' } as const;
+  }
   const reserve = db.transaction((requester: Requester, id: string, input: StartTask, proof?: StartBinding) => {
     const binding = proof ?? authorize(requester, id, input);
     if (!binding) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
     if (binding.connectionId !== id || !eligible(binding, requester.id)) throw new ApiFailure('ACCESS_UNVERIFIED');
     if (!/^[1-9][0-9]*$/.test(input.workItemKey)) throw new ApiFailure('INVALID_REQUEST');
+    const previous = replay(requester, id, input);
+    if (previous) return previous;
     const overrides = launchPreferences(input.overrides);
-    const choices = overrides ? [overrides.model, overrides.reasoningEffort ?? null] : [];
-    const digest = sha256Hex(JSON.stringify([id, input.workItemKey, input.copilotAccountId, ...choices]));
-    const previous = db.prepare<[string, string], { id: string; request_hash: string; generation: number; scope: string }>(`
-      SELECT t.id, s.request_hash, s.connection_generation AS generation, t.runtime_scope AS scope
-      FROM tasks t LEFT JOIN task_starts s ON s.task_id=t.id
-      WHERE t.requester_id=? AND t.start_request_id=?
-    `).get(requester.id, input.startRequestId);
-    if (previous) {
-      const legacy = sha256Hex(JSON.stringify([id, previous.generation, previous.scope, input.workItemKey, input.copilotAccountId, ...choices]));
-      if (previous.request_hash !== digest && previous.request_hash !== legacy) throw new ApiFailure('REQUEST_ID_REUSED');
-      return { taskId: previous.id, state: 'queued' } as const;
-    }
+    const digest = sha256Hex(JSON.stringify([id, input.workItemKey, input.copilotAccountId, ...commandChoices(overrides)]));
     if (db.prepare(`SELECT 1 FROM tasks WHERE repo_id=? AND work_item_key=?
       AND state NOT IN ('completed','stopped','failed')`).get(binding.repoId, input.workItemKey)) {
       throw new ApiFailure('TASK_ALREADY_ACTIVE');
@@ -137,6 +150,7 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
 
   return {
     reserve: reserve.immediate,
+    replay: db.transaction(replay),
     claim: claim.immediate,
     confirm: confirm.immediate,
     fail: fail.immediate,
@@ -145,24 +159,29 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
       if (current?.state !== 'needs_recovery' || current.requesterId !== requester.id) return undefined;
       return toClaim(current);
     },
-    next() {
-      const row = db.prepare<[], { id: string }>(`
-        SELECT t.id FROM tasks t JOIN task_starts s ON s.task_id=t.id WHERE t.state='queued' ORDER BY t.created_at,t.id LIMIT 1
-      `).get();
+    next(excluded: string[] = []) {
+      const row = db.prepare<[string], { id: string }>(`
+        SELECT t.id FROM tasks t JOIN task_starts s ON s.task_id=t.id WHERE t.state='queued'
+          AND t.id NOT IN (SELECT value FROM json_each(?)) ORDER BY t.created_at,t.id LIMIT 1
+      `).get(JSON.stringify(excluded));
       const current = row && load.get(row.id);
       return current && toClaim(current);
     },
-    requireAuthorization(candidate: StartClaim) {
-      return db.prepare(`UPDATE tasks SET state='needs_auth',updated_at=?
+    failUnclaimed(candidate: StartClaim) {
+      return db.prepare(`UPDATE tasks SET state='failed',updated_at=?
         WHERE id=? AND state='queued' AND requested_session_id=?`).run(now(), candidate.taskId, candidate.requestedSessionId).changes === 1;
     },
     requireRecovery(claimed: StartClaim) {
       return db.prepare(`UPDATE tasks SET state='needs_recovery',updated_at=?
         WHERE id=? AND state='starting' AND requested_session_id=?`).run(now(), claimed.taskId, claimed.requestedSessionId).changes === 1;
     },
-    recoverInterrupted() {
+    recoverInterrupted: db.transaction(() => {
+      db.prepare(`UPDATE tasks SET state='failed',updated_at=?
+        WHERE state='needs_auth' AND sdk_session_id IS NULL
+          AND EXISTS (SELECT 1 FROM task_starts WHERE task_id=tasks.id)
+          AND NOT EXISTS (SELECT 1 FROM task_observations WHERE task_id=tasks.id)`).run(now());
       return db.prepare(`UPDATE tasks SET state='needs_recovery',updated_at=?
         WHERE state='starting' AND EXISTS (SELECT 1 FROM task_starts WHERE task_id=tasks.id)`).run(now()).changes;
-    },
+    }).immediate,
   };
 }

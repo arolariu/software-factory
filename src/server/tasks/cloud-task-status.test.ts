@@ -10,7 +10,7 @@ const target = {
   sessionId: 'session-one', sessionUrl: 'https://github.com/copilot/tasks/session-one',
 };
 const proof = {
-  id: 'session-one', html_url: target.sessionUrl, creator_type: 'user',
+  id: 'session-one', html_url: 'https://github.com/my-account/disposable/copilot/tasks/session-one', creator_type: 'user',
   creator: { id: 42 }, owner: { id: 42 }, repository: { id: 81 }, state: 'waiting_for_user',
   sessions: [{ prompt: 'Sensitive prompt', error: { message: 'Sensitive error' } }],
 };
@@ -28,6 +28,7 @@ it('reads only exact repo, creator and linked task status through the GitHub App
 
 it.each([
   { id: 'other-task' }, { html_url: 'https://other.example/copilot/tasks/session-one' },
+  { html_url: 'https://github.com/my-account/another/copilot/tasks/session-one' },
   { creator_type: 'organization' }, { creator: { id: 43 } }, { owner: { id: 43 } },
   { repository: { id: 82 } }, { state: 'unknown' },
 ])('does not release status when the provider payload does not bind to the task (%j)', async (override) => {
