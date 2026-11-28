@@ -39,6 +39,7 @@ async function click(root: HTMLElement, text: string) {
 it('links Copilot separately and shows models and account quota in their reported units', async () => {
   let linked = false;
   let samples = 0;
+  let defaultAccountId: string | null = null;
   const wire = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url);
     if (path === '/api/build') return json({ revision: null, builtAt: null, runUrl: null });
@@ -57,7 +58,12 @@ it('links Copilot separately and shows models and account quota in their reporte
     if (path === '/api/copilot/accounts') return json({ items: linked ? [
       { id: 'grant', accountLabel: 'owner-copilot', state: 'connected', host: 'github.com' },
       { id: 'expired', accountLabel: 'former', state: 'needs_auth', host: 'github.com' },
-    ] : [] });
+    ] : [], defaultAccountId });
+    if (path === '/api/copilot/accounts/default') {
+      expect(init).toMatchObject({ method: 'PUT', headers: { 'X-CSRF-Token': 'fixture' } });
+      ({ accountId: defaultAccountId } = JSON.parse(String(init?.body)) as { accountId: string | null });
+      return noContent();
+    }
     if (path === '/api/copilot/accounts/grant/catalog') {
       samples++;
       if (samples === 2) return json({ models: null, quota: [] });
@@ -82,6 +88,14 @@ it('links Copilot separately and shows models and account quota in their reporte
   const root = mountSetup();
   await click(root, 'Link GitHub Copilot');
   await click(root, 'Check approval');
+  await click(root, 'Use owner-copilot as default');
+  await vi.waitFor(() => {
+    expect(defaultAccountId).toBe('grant');
+    expect(root.textContent).toContain('Default for new tasks');
+    expect(root.textContent).not.toContain('Use former as default');
+  });
+  await click(root, 'Clear default');
+  await vi.waitFor(() => expect(defaultAccountId).toBeNull());
   await click(root, 'Check Copilot catalog for owner-copilot');
   await vi.waitFor(() => {
     expect(root.textContent).toContain('Model Alpha');

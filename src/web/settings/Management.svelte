@@ -9,6 +9,7 @@
   let me = $state<ApiDto<'me'>>();
   let connections = $state<ApiDto<'connections'>['items']>([]);
   let copilotAccounts = $state<ApiDto<'copilotAccounts'>['items']>([]);
+  let defaultCopilotAccount = $state<string | null>(null);
   let catalog = $state<{ accountId: string; data: ApiDto<'copilotCatalog'> }>();
   const quotaLabels = new Map([['chat', 'Chat'], ['completions', 'Completions'], ['premium_interactions', 'Premium interactions']]);
   let flow = $state<Flow>();
@@ -59,6 +60,7 @@
   async function load() {
     catalog = undefined;
     copilotAccounts = [];
+    defaultCopilotAccount = null;
     if ((await loadSetup()).signInAvailable) {
       const active = await read<{ flow: Flow | null }>('/api/authorization/flows');
       flow = active.flow ?? undefined;
@@ -69,7 +71,11 @@
     me = await identity.json() as ApiDto<'me'>;
     settings = await read<InstanceSettings>('/api/settings/instance');
     connections = (await read<ApiDto<'connections'>>('/api/connections')).items;
-    if (settings.copilotEnabled) copilotAccounts = (await read<ApiDto<'copilotAccounts'>>('/api/copilot/accounts')).items;
+    if (settings.copilotEnabled) {
+      const { items, defaultAccountId } = await read<ApiDto<'copilotAccounts'>>('/api/copilot/accounts');
+      copilotAccounts = items;
+      defaultCopilotAccount = defaultAccountId;
+    }
   }
   onMount(() => {
     void perform(load);
@@ -126,6 +132,13 @@
       catalog = undefined;
       const data = await mutate<ApiDto<'copilotCatalog'>>(`/api/copilot/accounts/${encodeURIComponent(accountId)}/catalog`, 'POST');
       catalog = { accountId, data };
+    });
+  }
+
+  function setDefaultCopilotAccount(accountId: string | null) {
+    void perform(async () => {
+      await mutate('/api/copilot/accounts/default', 'PUT', { accountId });
+      defaultCopilotAccount = accountId;
     });
   }
 </script>
@@ -197,12 +210,20 @@
         {#each copilotAccounts as account (account.id)}
           <div class="copilot-account">
             <div class="account">
-              <strong>{account.accountLabel}</strong>
-              {#if account.state === 'needs_auth'}
-                <button type="button" disabled={busy} onclick={() => start({ intent: 'reconnect_copilot', copilotAccountId: account.id })}>{`Reconnect Copilot for ${account.accountLabel}`}</button>
-              {:else}
-                <button type="button" disabled={busy} onclick={() => checkCatalog(account.id)}>{`Check Copilot catalog for ${account.accountLabel}`}</button>
-              {/if}
+              <span><strong>{account.accountLabel}</strong>{#if account.id === defaultCopilotAccount} <span class="chip">Default for new tasks</span>{/if}</span>
+              <div class="controls">
+                {#if account.state === 'needs_auth'}
+                  <button type="button" disabled={busy} onclick={() => start({ intent: 'reconnect_copilot', copilotAccountId: account.id })}>{`Reconnect Copilot for ${account.accountLabel}`}</button>
+                {:else}
+                  <button type="button" disabled={busy} onclick={() => checkCatalog(account.id)}>{`Check Copilot catalog for ${account.accountLabel}`}</button>
+                  {#if account.id !== defaultCopilotAccount}
+                    <button type="button" disabled={busy} onclick={() => setDefaultCopilotAccount(account.id)}>{`Use ${account.accountLabel} as default`}</button>
+                  {/if}
+                {/if}
+                {#if account.id === defaultCopilotAccount}
+                  <button type="button" disabled={busy} onclick={() => setDefaultCopilotAccount(null)}>Clear default</button>
+                {/if}
+              </div>
             </div>
             {#if catalog?.accountId === account.id}
               <div aria-live="polite">

@@ -16,12 +16,15 @@ import { createRepositoryService } from '../repositories/sync.js';
 import { createTaskReads } from '../persistence/task-reads.js';
 import { createCopilotCatalog, type CatalogInspection } from './copilot-catalog.js';
 import { createSupervisedLaunch, type LaunchRuntime } from '../tasks/supervised-launch.js';
+import { createGitHubCloudAdmission, type TrialTarget } from '../tasks/github-cloud-admission.js';
+import { probeCloudTaskWithSdk } from '../tasks/cloud-launch.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
+type LaunchOptions = LaunchRuntime | { approvedTarget: TrialTarget; probe?: typeof probeCloudTaskWithSdk };
 
 const workerIntervalMs = 500;
 
-export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: IdentityFiles, fetcher = fetch, launchRuntime?: LaunchRuntime) {
+export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: IdentityFiles, fetcher = fetch, launch?: LaunchOptions) {
   let setup: ReturnType<typeof parseIdentityConfig>;
   try {
     setup = parseIdentityConfig(JSON.parse(readFileSync(files.configFile, 'utf8')) as unknown);
@@ -36,11 +39,11 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
     try { return openCredentialVault(join(dataDir, 'credentials.sqlite'), key); }
     finally { key.fill(0); }
   })();
-  return createConfiguredPortal(db, setup, vault, cursorKey, fetcher, undefined, launchRuntime);
+  return createConfiguredPortal(db, setup, vault, cursorKey, fetcher, undefined, launch);
 }
 
 export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<typeof parseIdentityConfig>,
-  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch, inspectCopilot?: CatalogInspection, launchRuntime?: LaunchRuntime) {
+  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch, inspectCopilot?: CatalogInspection, launch?: LaunchOptions) {
   const workerSignal = new AsyncLocalStorage<AbortSignal>();
   const request: typeof fetch = (input, options) => {
     const worker = workerSignal.getStore();
@@ -77,6 +80,25 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
   });
   const taskReads = createTaskReads(db, cursorKey, identity.readGrant);
   const catalog = inspectCopilot && createCopilotCatalog(identity.readCopilotToken, inspectCopilot);
+  const launchRuntime = launch && 'approvedTarget' in launch ? createGitHubCloudAdmission(launch.approvedTarget, {
+    resolveConnection: identity.repositoryContext,
+    resolveAccount: identity.copilotLaunchAccount,
+    async verify(connection, account, requester) {
+      const registration = setup.registry.registration('github.com', 'copilot');
+      const token = await identity.readCopilotToken(account.id, requester);
+      const [copilot] = await Promise.all([
+        transport.verifyIdentity(registration, { accessToken: token, refreshToken: null, expiresAt: null }, connection.target),
+        verifyConnection(connection, requester),
+      ]);
+      const { host, scope, name } = connection.target;
+      const matchingUrl = `https://${host}/${encodeURIComponent(scope)}/${encodeURIComponent(name)}`;
+      if (copilot.subject !== account.subject || copilot.repo?.id !== connection.repositoryId ||
+        copilot.repo.scope !== connection.scope || copilot.repo.url !== matchingUrl) throw new ApiFailure('ACCESS_UNVERIFIED');
+      return { token, login: scope };
+    },
+    async issue(id, key, requester) { return (await repositories.issue(requester, id, key, { limit: '1' })).issue; },
+    probe: launch.probe ?? probeCloudTaskWithSdk,
+  }) : launch;
   const launcher = launchRuntime && createSupervisedLaunch(db, launchRuntime, identity.readGrant);
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;

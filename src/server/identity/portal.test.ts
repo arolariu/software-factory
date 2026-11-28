@@ -6,11 +6,117 @@ import { expect, it, vi } from 'vitest';
 import { buildApp } from '../build-app.js';
 import { migrate } from '../persistence/migrations.js';
 import { openDatabase } from '../persistence/open.js';
-import { openIdentityPortal } from './portal.js';
+import { createConfiguredPortal, openIdentityPortal } from './portal.js';
 import type { StartClaim } from '../persistence/task-start.js';
 import type { ApiDto } from '../../shared/api/schemas.js';
+import { openCredentialVault } from './credentials.js';
+import { createRegistry } from './github-hosts.js';
 
 const origin = 'https://factory.example';
+
+it('binds staged cloud dispatch to both real stored grants and the approved immutable repository', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-cloud-admission-'));
+  const data = openDatabase(join(root, 'factory.sqlite'));
+  migrate(data);
+  mkdirSync(join(root, 'assets'));
+  writeFileSync(join(root, 'index.html'), '<main>Portal</main>');
+  const registry = createRegistry([{
+    hostname: 'github.com', label: 'GitHub', deviceClientId: 'staging-app', copilotEnabled: true,
+  }]);
+  const ownerId = '42';
+  const repoId = '91';
+  const repoUrl = 'https://github.com/me/disposable';
+  let upstreamAccount = 42;
+  let upstreamRepo = 91;
+  let upstreamName = 'disposable';
+  const transport = vi.fn<typeof fetch>(async (url, init) => {
+    const bearer = new Headers(init?.headers).get('authorization');
+    const path = new URL(String(url)).pathname;
+    expect(['Bearer ghu_repository', 'Bearer ghu_copilot']).toContain(bearer);
+    if (path === '/user') {
+      expect(bearer).toBe('Bearer ghu_copilot');
+      return Response.json({ id: upstreamAccount, login: 'me' });
+    }
+    if (path === '/repos/me/disposable') {
+      return Response.json({
+        id: bearer === 'Bearer ghu_copilot' ? upstreamRepo : 91,
+        name: bearer === 'Bearer ghu_copilot' ? upstreamName : 'disposable',
+        owner: { id: 42, login: 'me' },
+      });
+    }
+    if (path === '/user/installations') return Response.json({ installations: [{
+      id: 13, account: { id: 42 }, permissions: { issues: 'read', pull_requests: 'read' },
+    }] });
+    if (path === '/user/installations/13/repositories') return Response.json({ repositories: [{ id: 91 }, { id: 92 }] });
+    expect(bearer).toBe('Bearer ghu_repository');
+    if (path.endsWith('/comments')) return Response.json([]);
+    expect(path).toBe('/repositories/91/issues/17');
+    return Response.json({
+      number: 17, state: 'open', title: 'Update docs', user: null, body: 'Private fixture must not appear in the prompt',
+      assignees: [], created_at: '2026-11-26T22:00:00.000Z', updated_at: '2026-11-26T22:00:00.000Z',
+    });
+  });
+  const probe = vi.fn(async (_token: string, request: { requestedSessionId: string }) => ({
+    sessionId: request.requestedSessionId, usage: { nanoAiu: 0, premiumRequests: 0.125 },
+  }));
+  const auth = createConfiguredPortal(data, { origin, registry }, openCredentialVault(join(root, 'credentials.sqlite'), randomBytes(32)),
+    randomBytes(32), transport, undefined, { approvedTarget: { repoId, ownerId }, probe });
+  const server = await buildApp({ db: data, staticRoot: root, build: { revision: null, builtAt: null, runUrl: null }, portal: auth.portal });
+  try {
+    const identity = auth.identity;
+    const pre = identity.csrf(undefined).sessionId!;
+    const tokens = (purpose: string) => ({ accessToken: `ghu_${purpose}`, refreshToken: null, expiresAt: null });
+    const person = (purpose: string) => ({ subject: ownerId, label: 'me', avatarUrl: null, tokens: tokens(purpose) });
+    const signIn = identity.selectAuthorization('github', { intent: 'sign_in', hostId: 'github.com' }, pre, null);
+    const signed = identity.persistAuthorization(pre, signIn.pending, signIn.registration, person('portal')).sessionId!;
+    const principal = identity.resolveRequester(signed)!;
+    const connect = identity.selectAuthorization('github', { intent: 'connect', repositoryUrl: repoUrl }, signed, principal);
+    identity.persistAuthorization(signed, connect.pending, connect.registration, {
+      ...person('repository'), repo: { id: repoId, scope: ownerId, name: 'disposable', host: 'github.com', url: repoUrl },
+    });
+    const link = identity.selectAuthorization('github', { intent: 'link_copilot', hostId: 'github.com' }, signed, principal);
+    identity.persistAuthorization(signed, link.pending, link.registration, person('copilot'));
+    const account = identity.copilotAccounts(principal).items[0]!;
+    const connection = identity.connections(principal).items[0]!;
+    const headers = { origin, cookie: `factory_session=${signed}`, 'x-csrf-token': identity.csrf(signed).csrfToken };
+    const optionsUrl = `/api/connections/${connection.id}/task-options`;
+    expect((await server.inject({ url: optionsUrl, headers })).json().launch.available).toBe(false);
+    identity.setDefaultCopilotAccount(principal, account.id);
+    expect((await server.inject({ url: optionsUrl, headers })).json().launch.available).toBe(true);
+    expect(transport).not.toHaveBeenCalled();
+    const requestTask = () => server.inject({ method: 'POST', url: `/api/connections/${connection.id}/tasks`, headers,
+      payload: { startRequestId: 'once', workItemKey: '17', copilotAccountId: account.id } });
+    upstreamAccount = 43;
+    expect((await requestTask()).json().code).toBe('ACCESS_UNVERIFIED');
+    upstreamAccount = 42;
+    upstreamRepo = 92;
+    expect((await requestTask()).json().code).toBe('ACCESS_UNVERIFIED');
+    upstreamRepo = 91;
+    upstreamName = 'moved';
+    expect((await requestTask()).json().code).toBe('ACCESS_UNVERIFIED');
+    upstreamName = 'disposable';
+    expect(data.prepare('SELECT count(*) AS n FROM tasks').get()).toEqual({ n: 0 });
+    const accepted = await requestTask();
+    expect(accepted.statusCode).toBe(202);
+    expect(probe).not.toHaveBeenCalled();
+    auth.start();
+    const location = String(accepted.headers.location);
+    await vi.waitFor(async () => {
+      expect((await server.inject({ url: location, headers })).json()).toMatchObject({
+        task: { state: 'running' }, sdkUsage: { nanoAiu: 0, premiumRequests: 0.125 },
+      });
+    }, { timeout: 3000 });
+    expect(probe).toHaveBeenCalledOnce();
+    expect(probe.mock.calls[0]?.[0]).toBe('ghu_copilot');
+    expect(probe.mock.calls[0]?.[1]).toMatchObject({ expectedLogin: 'me', repository: { owner: 'me', name: 'disposable' } });
+    expect(JSON.stringify(probe.mock.calls[0]?.[1])).not.toContain('Private fixture');
+  } finally {
+    await server.close();
+    await auth.close();
+    data.close();
+    rmSync(root, { recursive: true });
+  }
+});
 
 it.each([false, true])('signs in, connects and syncs through the app (supervised runtime supplied: %s)', async (enabled) => {
   const root = mkdtempSync(join(tmpdir(), 'factory-live-composition-'));

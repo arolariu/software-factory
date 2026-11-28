@@ -260,6 +260,19 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     ...identity,
     readGrant: store.readGrant,
     readTokens,
+    copilotLaunchAccount(requester: Requester, explicitId?: string) {
+      const id = explicitId ?? db.prepare<[string], { account_id: string }>(
+        'SELECT account_id FROM copilot_defaults WHERE user_id=?',
+      ).get(requester.id)?.account_id;
+      if (!id) return undefined;
+      const grant = getGrant(id, requester.id);
+      if (grant?.purpose !== 'copilot' || grant.host_id !== 'github.com' || grant.revoked_at !== null ||
+        grant.superseded_by !== null || !bound(grant)) return undefined;
+      const person = db.prepare<[string, string], { subject: string }>(
+        "SELECT subject FROM identities WHERE id=? AND user_id=? AND provider='github' AND issuer='github.com'",
+      ).get(grant.identity_id, requester.id);
+      return person && { id, identityId: grant.identity_id, subject: person.subject };
+    },
     async readCopilotToken(accountId: string, requester: Requester) {
       const grant = getGrant(accountId, requester.id);
       if (grant?.purpose !== 'copilot' || grant.superseded_by !== null) throw new ApiFailure('NOT_FOUND');
@@ -276,7 +289,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
     },
     recordRepositoryDenial: store.recordRepositoryDenial,
     disconnectRepository: store.disconnectRepository,
-    repositoryContext(connectionId: string, requester: Requester): RepositoryAccess | undefined {
+    repositoryContext(connectionId: string, requester: Requester): (RepositoryAccess & { identityId: string; subject: string }) | undefined {
       const row = getConnection(connectionId, requester.id);
       if (!row?.grant_id) return undefined;
       const grant = getGrant(row.grant_id, requester.id);
@@ -284,7 +297,7 @@ export function createIdentity({ db, vault, origin, registry, redeem, refresh, n
       const { target } = registry.repository(row.canonical_url, apiProvider(row.provider));
       return {
         id: row.id, repoId: row.repo_id, grantId: row.grant_id, generation: row.generation, provider: row.provider,
-        repositoryId: row.provider_repo_id, scope: row.provider_scope, target, subject: row.subject,
+        repositoryId: row.provider_repo_id, scope: row.provider_scope, target, subject: row.subject, identityId: row.identity_id,
       };
     },
     markConnectionVerified: store.markConnectionVerified,
