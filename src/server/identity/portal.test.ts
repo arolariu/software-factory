@@ -74,7 +74,7 @@ it('signs in, connects and syncs read-only through the app, without enabling mut
       VALUES ('fixture-task',?,?,?,?,?,'11','fixture-request','github_cloud','fixture','fixture-session','waiting_input',0,1)`)
       .run(stored.id, stored.repo_id, stored.user_id, stored.identity_id, stored.identity_id);
     data.exec(`INSERT INTO task_observations (task_id,title,session_state,observed_at,question_id,question_text)
-      VALUES ('fixture-task','Review tests','waiting_input',1,'question-one','Which suite?')`);
+      VALUES ('fixture-task','Review tests','waiting_input',${Date.now()},'question-one','Which suite?')`);
     expect((await server.inject({ url: '/api/active-sessions', headers })).json()).toMatchObject({
       sessions: [{ taskId: 'fixture-task', title: 'Review tests', state: 'waiting_input' }],
     });
