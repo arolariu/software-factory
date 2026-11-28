@@ -177,3 +177,25 @@ it('discards the receipt if the Copilot grant is revoked during the remote call'
   await expect(adapter.launch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
   expect(probe).toHaveBeenCalledOnce();
 });
+
+it('binds a prepared dispatch to one exact claim and rejects revocation before contacting the SDK', async () => {
+  const { adapter, probe, resolveAccount, verify } = fixture();
+  const claim = { ...binding, ...input, taskId: 'task', requesterId: 'alice', requestedSessionId: 'exact-session' };
+  const cancelled = await adapter.prepare(claim);
+  if (!cancelled) throw new Error('Expected prepared dispatch');
+  resolveAccount.mockReturnValueOnce(undefined);
+  await expect(cancelled.dispatch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
+  expect(probe).not.toHaveBeenCalled();
+
+  const prepared = await adapter.prepare(claim);
+  if (!prepared) throw new Error('Expected prepared dispatch');
+  claim.workItemKey = '18';
+  await expect(prepared.dispatch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
+  claim.workItemKey = '17';
+  await expect(prepared.dispatch({ ...claim, requestedSessionId: 'substituted' })).rejects.toThrow('ACCESS_UNVERIFIED');
+  expect(probe).not.toHaveBeenCalled();
+  await expect(prepared.dispatch(claim)).resolves.toMatchObject({ sessionId: 'exact-session' });
+  await expect(prepared.dispatch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
+  expect(probe).toHaveBeenCalledOnce();
+  expect(verify).toHaveBeenCalledTimes(2);
+});

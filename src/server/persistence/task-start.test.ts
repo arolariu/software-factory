@@ -1,5 +1,5 @@
 import SQLite from 'better-sqlite3';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { migrate } from './migrations.js';
 import { createTaskStarts } from './task-start.js';
 import { createSupervisedLaunch } from '../tasks/supervised-launch.js';
@@ -182,6 +182,20 @@ it('does not launch if fresh admission no longer verifies the queued account and
   await launcher.runNext();
   expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
     .toEqual({ state: 'needs_auth', sdk_session_id: null });
+});
+
+it('does not fall back to a second launch path when prepared admission denies the task', async () => {
+  const db = fixture();
+  const authorize = vi.fn(async () => binding);
+  const prepare = vi.fn(async () => undefined);
+  const launch = vi.fn();
+  const launcher = createSupervisedLaunch(db, { authorize, prepare, launch }, () => 'valid');
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  await launcher.runNext();
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(authorize).toHaveBeenCalledOnce();
+  expect(launch).not.toHaveBeenCalled();
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'needs_auth' });
 });
 
 it('denies a reservation without a verified grant and defers queued work when the worker is stopped', async () => {

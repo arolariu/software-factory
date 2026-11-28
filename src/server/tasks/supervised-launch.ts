@@ -8,10 +8,12 @@ import { createTaskUsage } from '../persistence/task-usage.js';
 
 type UsageAccess = Parameters<typeof createTaskUsage>[1];
 type Receipt = { claim: Readonly<StartClaim>; sessionId: string; sessionUrl?: string; usage?: unknown };
+type PreparedLaunch = { binding: StartBinding; dispatch(claim: Readonly<StartClaim>): Promise<Receipt> };
 export interface LaunchRuntime {
   describe?(requester: Requester, connectionId: string, query: ApiDto<'optionsQuery'>): ApiDto<'taskOptions'>;
   modelOptions?(requester: Requester, connectionId: string, query: ApiDto<'optionsQuery'>): Promise<ApiDto<'taskOptions'>>;
   authorize(requester: Requester, connectionId: string, input: StartTask, signal?: AbortSignal): Promise<StartBinding | undefined>;
+  prepare?(candidate: Readonly<StartClaim>, signal?: AbortSignal): Promise<PreparedLaunch | undefined>;
   launch(claim: Readonly<StartClaim>, signal?: AbortSignal): Promise<Receipt>;
 }
 
@@ -21,13 +23,16 @@ const keys = [
   'requestedSessionId', 'copilotAccountId', 'workItemKey', 'startRequestId',
 ] as const satisfies readonly (keyof StartClaim)[];
 
+export function startClaimKey(claim: Readonly<StartClaim>) {
+  return JSON.stringify([...keys.map((key) => claim[key]), claim.overrides?.model, claim.overrides?.reasoningEffort]);
+}
+
 export function createSupervisedLaunch(db: SQLite.Database, runtime: LaunchRuntime, readAccess: UsageAccess, now = Date.now) {
   const starts = createTaskStarts(db, undefined, now);
   const usage = createTaskUsage(db, readAccess);
   let running: Promise<void> | undefined;
   const confirm = db.transaction((claim: StartClaim, receipt: Receipt) => {
-    if (!sessionId.test(receipt.sessionId) || !keys.every((key) => receipt.claim[key] === claim[key]) ||
-      receipt.claim.overrides?.model !== claim.overrides?.model || receipt.claim.overrides?.reasoningEffort !== claim.overrides?.reasoningEffort ||
+    if (!sessionId.test(receipt.sessionId) || startClaimKey(receipt.claim) !== startClaimKey(claim) ||
       readAccess(claim.connectionId, { id: claim.requesterId }) !== 'valid' ||
       !starts.confirm(claim, receipt.sessionId, receipt.sessionUrl)) return false;
     if (receipt.usage !== undefined) {
@@ -42,11 +47,17 @@ export function createSupervisedLaunch(db: SQLite.Database, runtime: LaunchRunti
     if (!candidate || signal?.aborted) return;
     const requester = { id: candidate.requesterId };
     let proof: StartBinding | undefined;
+    let prepared: PreparedLaunch | undefined;
     try {
-      proof = await runtime.authorize(requester, candidate.connectionId, {
-        startRequestId: candidate.startRequestId, workItemKey: candidate.workItemKey, copilotAccountId: candidate.copilotAccountId,
-        ...(candidate.overrides && { overrides: candidate.overrides }),
-      }, signal);
+      if (runtime.prepare) {
+        prepared = await runtime.prepare(candidate, signal);
+        proof = prepared?.binding;
+      } else {
+        proof = await runtime.authorize(requester, candidate.connectionId, {
+          startRequestId: candidate.startRequestId, workItemKey: candidate.workItemKey, copilotAccountId: candidate.copilotAccountId,
+          ...(candidate.overrides && { overrides: candidate.overrides }),
+        }, signal);
+      }
     } catch {
       // Unverified admission is held without calling the launch runtime or blocking the queue.
     }
@@ -62,7 +73,8 @@ export function createSupervisedLaunch(db: SQLite.Database, runtime: LaunchRunti
     }
     try {
       const { overrides } = claim;
-      const receipt = await runtime.launch(Object.freeze({ ...claim, ...(overrides && { overrides: Object.freeze({ ...overrides }) }) }), signal);
+      const bound = Object.freeze({ ...claim, ...(overrides && { overrides: Object.freeze({ ...overrides }) }) });
+      const receipt = await (prepared ? prepared.dispatch(bound) : runtime.launch(bound, signal));
       if (!signal?.aborted && confirm.immediate(claim, receipt)) return;
     } catch {
       // The runtime may have started work even when its reply is lost.

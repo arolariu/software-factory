@@ -4,7 +4,7 @@ import { ApiFailure } from '../http/problems.js';
 import type { StartBinding, StartClaim } from '../persistence/task-start.js';
 import type { RepositoryAccess } from '../repositories/provider.js';
 import type { probeCloudTaskWithSdk } from './cloud-launch.js';
-import type { LaunchRuntime } from './supervised-launch.js';
+import { startClaimKey, type LaunchRuntime } from './supervised-launch.js';
 import { isLaunchChoice, launchPreferences } from './launch-preferences.js';
 
 export type CloudConnection = RepositoryAccess & { identityId: string; subject: string };
@@ -89,6 +89,41 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
     return { ...candidate, credential, overrides };
   }
 
+  async function prepare(candidate: Readonly<StartClaim>, signal?: AbortSignal) {
+    const requester = { id: candidate.requesterId };
+    const key = startClaimKey(candidate);
+    const current = await verify(requester, candidate.connectionId, candidate, signal, candidate);
+    if (!current) return undefined;
+    let used = false;
+    return {
+      binding: current.binding,
+      async dispatch(claim: Readonly<StartClaim>) {
+        if (used || startClaimKey(claim) !== key) throw new ApiFailure('ACCESS_UNVERIFIED');
+        used = true;
+        signal?.throwIfAborted();
+        if (!stillBound(requester, current)) throw new ApiFailure('ACCESS_UNVERIFIED');
+        const { connection, credential } = current;
+        const repository = { owner: connection.target.scope, name: connection.target.name };
+        const issueUrl = `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${claim.workItemKey}`;
+        const result = await ports.probe(credential.token, {
+          requestedSessionId: claim.requestedSessionId, expectedLogin: credential.login, repository, turnId: claim.startRequestId,
+          ...current.overrides,
+          prompt: `Review the issue at ${issueUrl} and propose an implementation and tests. Do not edit files, run shell commands, or create branches, commits, issues, or pull requests.`,
+        }, signal);
+        if (result.sessionId !== claim.requestedSessionId || !stillBound(requester, current)) throw new ApiFailure('ACCESS_UNVERIFIED');
+        const { usage } = result;
+        return {
+          claim, sessionId: result.sessionId,
+          ...(result.sessionUrl && { sessionUrl: result.sessionUrl }),
+          ...(usage && { usage: {
+            ...(usage.nanoAiu === null ? {} : { aiCreditsStatus: 'complete', totalNanoAiu: usage.nanoAiu }),
+            ...(usage.premiumRequests === null ? {} : { totalPremiumRequestCost: usage.premiumRequests }),
+          } }),
+        };
+      },
+    };
+  }
+
   return {
     describe(requester, connectionId, query) {
       return optionSummary(local(requester, connectionId, query.copilotAccountId));
@@ -104,28 +139,11 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
     async authorize(requester, connectionId, input, signal?: AbortSignal) {
       return (await verify(requester, connectionId, input, signal))?.binding;
     },
+    prepare,
     async launch(claim, signal?: AbortSignal) {
-      const requester = { id: claim.requesterId };
-      const current = await verify(requester, claim.connectionId, claim, signal, claim);
+      const current = await prepare(claim, signal);
       if (!current) throw new ApiFailure('ACCESS_UNVERIFIED');
-      const { connection, credential } = current;
-      const repository = { owner: connection.target.scope, name: connection.target.name };
-      const issueUrl = `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${claim.workItemKey}`;
-      const result = await ports.probe(credential.token, {
-        requestedSessionId: claim.requestedSessionId, expectedLogin: credential.login, repository, turnId: claim.startRequestId,
-        ...current.overrides,
-        prompt: `Review the issue at ${issueUrl} and propose an implementation and tests. Do not edit files, run shell commands, or create branches, commits, issues, or pull requests.`,
-      }, signal);
-      if (result.sessionId !== claim.requestedSessionId || !stillBound(requester, current)) throw new ApiFailure('ACCESS_UNVERIFIED');
-      const { usage } = result;
-      return {
-        claim, sessionId: result.sessionId,
-        ...(result.sessionUrl && { sessionUrl: result.sessionUrl }),
-        ...(usage && { usage: {
-          ...(usage.nanoAiu === null ? {} : { aiCreditsStatus: 'complete', totalNanoAiu: usage.nanoAiu }),
-          ...(usage.premiumRequests === null ? {} : { totalPremiumRequestCost: usage.premiumRequests }),
-        } }),
-      };
+      return current.dispatch(claim);
     },
   } satisfies LaunchRuntime;
 }

@@ -125,6 +125,8 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     expect((await requestTask()).json().code).toBe('ACCESS_UNVERIFIED');
     upstreamName = 'disposable';
     expect(data.prepare('SELECT count(*) AS n FROM tasks').get()).toEqual({ n: 0 });
+    transport.mockClear();
+    inspect.mockClear();
     const accepted = await requestTask();
     expect(accepted.statusCode).toBe(202);
     expect(probe).not.toHaveBeenCalled();
@@ -139,6 +141,9 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
         cloudStatusAvailable: true,
       });
     }, { timeout: 3000 });
+    expect(transport.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/user')).toHaveLength(2);
+    expect(transport.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/repositories/91/issues/17')).toHaveLength(2);
+    expect(inspect).toHaveBeenCalledTimes(2);
     expect(statusReads).not.toHaveBeenCalled();
     expect((await server.inject(statusPath)).statusCode).toBe(401);
     expect((await server.inject({ url: '/api/tasks/unrelated/cloud-status', headers })).statusCode).toBe(404);
