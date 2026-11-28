@@ -52,6 +52,8 @@ src/server/tasks/**
 !src/server/tasks/supervised-launch.ts
 !src/server/tasks/cloud-launch.ts
 !src/server/tasks/cloud-session-link.ts
+!src/server/tasks/cloud-task-status.ts
+!src/server/tasks/cloud-task-status.test.ts
 !src/server/tasks/launch-preferences.ts
 !src/server/tasks/cloud-launch.test.ts
 !src/server/tasks/github-cloud-admission.ts

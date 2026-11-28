@@ -173,6 +173,10 @@ export function registerPortalRoutes(app: FastifyInstance, options?: PortalOptio
   read('/api/tasks/:id', { params: 'byId' }, 'task', (m, p, r) => m.tasks.task(p, r.params.id));
   read('/api/tasks/:id/activity', { params: 'byId', querystring: 'paging' }, 'activity',
     (m, p, r) => m.tasks.activity(p, r.params.id, r.query));
+  read('/api/tasks/:id/cloud-status', { params: 'byId' }, 'cloudTaskStatus', (m, p, r) => {
+    if (!m.tasks.cloudStatus) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
+    return m.tasks.cloudStatus(p, r.params.id);
+  });
   read('/api/connections/:id/task-options', { params: 'byId', querystring: 'optionsQuery' }, 'taskOptions',
     (m, p, r) => m.tasks.options(p, r.params.id, r.query));
   read('/api/statistics', {}, 'statistics', (m, p) => m.tasks.statistics(p));

@@ -29,6 +29,9 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
   let upstreamAccount = 42;
   let upstreamRepo = 91;
   let upstreamName = 'disposable';
+  let upstreamTaskCreator = 42;
+  let deferredStatus: Promise<Response> | undefined;
+  const statusReads = vi.fn();
   const transport = vi.fn<typeof fetch>(async (url, init) => {
     const bearer = new Headers(init?.headers).get('authorization');
     const path = new URL(String(url)).pathname;
@@ -48,6 +51,17 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
       id: 13, account: { id: 42 }, permissions: { issues: 'read', pull_requests: 'read' },
     }] });
     if (path === '/user/installations/13/repositories') return Response.json({ repositories: [{ id: 91 }, { id: 92 }] });
+    const remote = /^\/agents\/repos\/me\/disposable\/tasks\/([a-f0-9-]+)$/.exec(path)?.[1];
+    if (remote) {
+      expect(bearer).toBe('Bearer ghu_copilot');
+      statusReads(remote);
+      if (deferredStatus) return deferredStatus;
+      return Response.json({
+        id: remote, html_url: `https://github.com/copilot/tasks/${remote}`, state: 'completed',
+        creator_type: 'user', creator: { id: upstreamTaskCreator }, owner: { id: 42 }, repository: { id: 91 },
+        sessions: [{ prompt: 'Private provider transcript' }],
+      });
+    }
     expect(bearer).toBe('Bearer ghu_repository');
     if (path.endsWith('/comments')) return Response.json([]);
     expect(path).toBe('/repositories/91/issues/17');
@@ -109,14 +123,40 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     const accepted = await requestTask();
     expect(accepted.statusCode).toBe(202);
     expect(probe).not.toHaveBeenCalled();
-    auth.start();
     const location = String(accepted.headers.location);
+    const statusPath = `${location}/cloud-status`;
+    expect((await server.inject({ url: statusPath, headers })).json()).toEqual({ state: null });
+    auth.start();
     await vi.waitFor(async () => {
       expect((await server.inject({ url: location, headers })).json()).toMatchObject({
         task: { state: 'running' }, sdkUsage: { nanoAiu: 0, premiumRequests: 0.125 },
         sessionUrl: expect.stringMatching(/^https:\/\/github\.com\/copilot\/tasks\/[a-f0-9-]+$/),
+        cloudStatusAvailable: true,
       });
     }, { timeout: 3000 });
+    expect(statusReads).not.toHaveBeenCalled();
+    expect((await server.inject(statusPath)).statusCode).toBe(401);
+    expect((await server.inject({ url: '/api/tasks/unrelated/cloud-status', headers })).statusCode).toBe(404);
+    const checked = await server.inject({ url: statusPath, headers });
+    expect(checked.json()).toEqual({ state: 'completed' });
+    expect(checked.headers['cache-control']).toBe('no-store');
+    expect(statusReads).toHaveBeenCalledExactlyOnceWith(probe.mock.calls[0]?.[1].requestedSessionId);
+    upstreamTaskCreator = 43;
+    expect((await server.inject({ url: statusPath, headers })).json()).toEqual({ state: null });
+    expect((await server.inject({ url: location, headers })).json().task.state).toBe('running');
+    const pending = Promise.withResolvers<Response>();
+    deferredStatus = pending.promise;
+    const inFlight = server.inject({ url: statusPath, headers }).then((response) => response);
+    await vi.waitFor(() => expect(statusReads).toHaveBeenCalledTimes(3));
+    data.prepare('UPDATE delegated_grants SET revoked_at=1 WHERE id=?').run(account.id);
+    const id = probe.mock.calls[0]?.[1].requestedSessionId;
+    pending.resolve(Response.json({
+      id, html_url: `https://github.com/copilot/tasks/${id}`, state: 'completed',
+      creator_type: 'user', creator: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
+    }));
+    expect((await inFlight).json()).toEqual({ state: null });
+    expect((await server.inject({ url: statusPath, headers })).json()).toEqual({ state: null });
+    expect(statusReads).toHaveBeenCalledTimes(3);
     expect(probe).toHaveBeenCalledOnce();
     expect(probe.mock.calls[0]?.[0]).toBe('ghu_copilot');
     expect(probe.mock.calls[0]?.[1]).toMatchObject({
@@ -228,6 +268,8 @@ it.each([false, true])('signs in, connects and syncs through the app (supervised
       activeTasks: 1, credits: { measured: null, unmeasuredTasks: 1 },
     });
     expect((await server.inject('/api/tasks/fixture-task')).statusCode).toBe(401);
+    if (!enabled) expect((await server.inject({ url: '/api/tasks/fixture-task/cloud-status', headers })).json().code)
+      .toBe('CAPABILITY_UNAVAILABLE');
     expect(transport).toHaveBeenCalledTimes(7);
     const attempt = (repoId: string, requestHeaders = headers) => server.inject({
       method: 'POST', url: `/api/connections/${repoId}/tasks`, headers: requestHeaders,

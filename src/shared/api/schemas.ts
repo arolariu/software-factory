@@ -164,10 +164,14 @@ export const ApiSchemas = {
   task: object({
     task, sessionState: nullable(sessionState), observedAt: nullable(at),
     sessionUrl: Type.Optional(url),
+    cloudStatusAvailable: Type.Optional(Type.Literal(true)),
     sdkUsage: Type.Optional(object({ observedAt: at, nanoAiu: nullable(count), premiumRequests: nullable(credits) })),
     pendingQuestion: nullable(object({ id, text })),
     actions: object({ context: availability, answer: availability, archive: availability }),
     draftPrUrl: nullable(url),
+  }),
+  cloudTaskStatus: object({
+    state: nullable(names('queued', 'in_progress', 'completed', 'failed', 'idle', 'waiting_for_user', 'timed_out', 'cancelled')),
   }),
   activity: availablePage(object({ id, at, kind: id, summary: text })),
   taskOptions: object({

@@ -18,6 +18,8 @@ import { createCopilotCatalog, type CatalogInspection } from './copilot-catalog.
 import { createSupervisedLaunch, type LaunchRuntime } from '../tasks/supervised-launch.js';
 import { createGitHubCloudAdmission, type TrialTarget } from '../tasks/github-cloud-admission.js';
 import { probeCloudTaskWithSdk } from '../tasks/cloud-launch.js';
+import { createTaskUsage } from '../persistence/task-usage.js';
+import { readCloudTaskStatus } from '../tasks/cloud-task-status.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
 type LaunchOptions = LaunchRuntime | { approvedTarget: TrialTarget; probe?: typeof probeCloudTaskWithSdk };
@@ -79,6 +81,8 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
     },
   });
   const taskReads = createTaskReads(db, cursorKey, identity.readGrant);
+  const trialTarget = launch && 'approvedTarget' in launch ? launch.approvedTarget : undefined;
+  const taskUsage = trialTarget && createTaskUsage(db, identity.readGrant);
   const catalog = inspectCopilot && createCopilotCatalog(identity.readCopilotToken, inspectCopilot);
   const launchRuntime = launch && 'approvedTarget' in launch ? createGitHubCloudAdmission(launch.approvedTarget, {
     resolveConnection: identity.repositoryContext,
@@ -111,6 +115,29 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
   };
   const unavailable = () => { throw new ApiFailure('TEMPORARILY_UNAVAILABLE'); };
   const disabled = () => { throw new ApiFailure('CAPABILITY_UNAVAILABLE'); };
+  function cloudContext(requester: Requester, taskId: string) {
+    const { sessionUrl } = taskReads.task(requester, taskId);
+    const binding = taskUsage?.target(requester, taskId);
+    if (!sessionUrl || !binding || !trialTarget) return undefined;
+    const connection = identity.repositoryContext(binding.connectionId, requester);
+    const account = identity.copilotLaunchAccount(requester, binding.copilotAccountId);
+    if (!connection || connection.repositoryId !== trialTarget.repoId || connection.scope !== trialTarget.ownerId ||
+      account?.identityId !== connection.identityId || account.subject !== trialTarget.ownerId) return undefined;
+    return { binding, target: {
+      sessionId: binding.sessionId, sessionUrl, owner: connection.target.scope, repository: connection.target.name,
+      repositoryId: trialTarget.repoId, ownerId: trialTarget.ownerId,
+    } };
+  }
+  async function cloudStatus(requester: Requester, taskId: string): Promise<ApiDto<'cloudTaskStatus'>> {
+    const scoped = cloudContext(requester, taskId);
+    if (!scoped) return { state: null };
+    const grantId = scoped.binding.copilotAccountId;
+    const token = await identity.readCopilotToken(grantId, requester).catch(() => undefined);
+    if (!token) return { state: null };
+    const status = await readCloudTaskStatus(scoped.target, token, request);
+    if (JSON.stringify(cloudContext(requester, taskId)) !== JSON.stringify(scoped)) return { state: null };
+    return status;
+  }
   function taskOptions(requester: Requester, id: string, query: ApiDto<'optionsQuery'>) {
     const describe = launchRuntime?.describe;
     if (!describe) return unavailable();
@@ -140,6 +167,11 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
       },
       tasks: {
         ...taskReads, unlinkedSessions: unavailable,
+        task(requester, id) {
+          const task = taskReads.task(requester, id);
+          return trialTarget && task.sessionUrl ? { ...task, cloudStatusAvailable: true as const } : task;
+        },
+        ...(trialTarget && { cloudStatus }),
         activity: unavailable,
         options(requester, id, query) {
           const base = taskOptions(requester, id, query);
