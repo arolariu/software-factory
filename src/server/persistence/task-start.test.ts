@@ -142,6 +142,17 @@ it('releases a claimed start only after an exact definitive rejection', () => {
   expect(starts.reserve(requester, binding.connectionId, { ...input, startRequestId: 'replacement' }).taskId).not.toBe(taskId);
 });
 
+it('does not turn a verified stopped observation into a failure during start reconciliation', () => {
+  const db = fixture();
+  const starts = createTaskStarts(db, () => binding);
+  const { taskId } = starts.reserve(requester, binding.connectionId, input);
+  const claim = starts.claim(taskId)!;
+  db.prepare("INSERT INTO task_observations (task_id,session_state,terminal_at) VALUES (?,'stopped',25)").run(taskId);
+  expect(starts.fail(claim)).toBe(true);
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'stopped' });
+  expect(db.prepare('SELECT terminal_at FROM task_observations WHERE task_id=?').get(taskId)).toEqual({ terminal_at: 25 });
+});
+
 it('runs a durable request once and accepts only its exact receipt and measured usage', async () => {
   const db = fixture();
   let calls = 0;
@@ -256,9 +267,10 @@ it('holds a task whose pre-dispatch verification failed without starving the nex
 
 it('replays a durable receipt without rechecking mutable upstream admission', async () => {
   const db = fixture();
-  const authorize = vi.fn(async () => binding);
+  const authorize = vi.fn(async (): Promise<typeof binding | undefined> => binding);
   let permitted: 'valid' | 'denied' = 'valid';
-  const launcher = createSupervisedLaunch(db, { authorize, launch: vi.fn() }, () => permitted);
+  let consent = true;
+  const launcher = createSupervisedLaunch(db, { authorize, canReplay: () => consent, launch: vi.fn() }, () => permitted);
   const accepted = await launcher.reserve(requester, binding.connectionId, input);
   authorize.mockRejectedValue(new Error('provider is down'));
   await expect(launcher.reserve(requester, binding.connectionId, input)).resolves.toEqual(accepted);
@@ -266,6 +278,13 @@ it('replays a durable receipt without rechecking mutable upstream admission', as
   expect(authorize).toHaveBeenCalledOnce();
   permitted = 'denied';
   await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('ACCESS_DENIED');
+  permitted = 'valid';
+  db.exec("UPDATE repo_connections SET retired_at=30 WHERE id='conn'");
+  await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('ACCESS_UNVERIFIED');
+  db.exec("UPDATE repo_connections SET retired_at=NULL WHERE id='conn'");
+  consent = false;
+  authorize.mockResolvedValueOnce(undefined);
+  await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('CAPABILITY_UNAVAILABLE');
 });
 
 it('honors provider backoff before retrying an unclaimed task', async () => {
@@ -286,26 +305,40 @@ it('honors provider backoff before retrying an unclaimed task', async () => {
   expect(launch).toHaveBeenCalledOnce();
 });
 
-it.each(['proof-denied', 'cache-unverified', 'shutdown-during-admission', 'long-backoff'] as const)(
+it.each(['proof-denied', 'cache-denied', 'cache-unverified', 'shutdown-during-admission', 'aborted-provider-request', 'long-backoff'] as const)(
   'does not dispatch when queued admission ends in %s', async (scenario) => {
     const db = fixture();
     const stop = new AbortController();
-    let access: 'valid' | 'unverified' = 'valid';
+    let access: 'valid' | 'unverified' | 'denied' = 'valid';
     const authorize = vi.fn(async () => binding);
     const launch = vi.fn();
     const launcher = createSupervisedLaunch(db, { authorize, launch }, () => access);
     const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
     if (scenario === 'proof-denied') authorize.mockRejectedValueOnce(new ApiFailure('COPILOT_REAUTH_REQUIRED'));
+    if (scenario === 'cache-denied') access = 'denied';
     if (scenario === 'cache-unverified') access = 'unverified';
     if (scenario === 'long-backoff') authorize.mockRejectedValueOnce(new ApiFailure('RATE_LIMITED', 120));
     if (scenario === 'shutdown-during-admission') authorize.mockImplementationOnce(async () => { stop.abort(); return binding; });
+    if (scenario === 'aborted-provider-request') authorize.mockImplementationOnce(async () => { stop.abort(); throw new Error('Interrupted'); });
     await launcher.runNext(stop.signal);
     expect(launch).not.toHaveBeenCalled();
     expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({
-      state: scenario === 'proof-denied' || scenario === 'long-backoff' ? 'failed' : 'queued',
+      state: scenario === 'proof-denied' || scenario === 'cache-denied' || scenario === 'long-backoff' ? 'failed' : 'queued',
     });
   },
 );
+
+it('does not drop the reserved model when repeating admission on an unprepared worker', async () => {
+  const db = fixture();
+  const authorize = vi.fn(async () => binding);
+  const launch = vi.fn(async (claim: Readonly<StartClaim>) => ({ claim, sessionId: 'session' }));
+  const launcher = createSupervisedLaunch(db, { authorize, launch }, () => 'valid');
+  const configured = { ...input, overrides: { model: 'custom', reasoningEffort: 'low' } };
+  await launcher.reserve(requester, binding.connectionId, configured);
+  await launcher.runNext();
+  expect(authorize.mock.calls[1]).toEqual([requester, binding.connectionId, configured, undefined]);
+  expect(launch.mock.calls[0]?.[0].overrides).toEqual(configured.overrides);
+});
 
 it('releases legacy pre-dispatch holds on restart without starting them', async () => {
   const db = fixture();

@@ -72,6 +72,21 @@ it('keeps exact remote delivery when shutdown interrupts only the optional usage
   expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
 });
 
+it('rechecks the prepared credential before sending the turn, not just before creating the session', async () => {
+  const { client, emit, session, listeners } = fixture();
+  let valid = true;
+  const verifyCredential = vi.fn(() => {
+    if (!valid) throw new Error('Credential replaced');
+  });
+  const pending = expect(dispatchCloudTask(client, { ...request, verifyCredential })).rejects.toThrow('Credential replaced');
+  await vi.waitFor(() => expect(listeners.size).toBe(1));
+  valid = false;
+  emit({ type: 'session.start', data: { producer: 'copilot-agent' } });
+  await pending;
+  expect(verifyCredential).toHaveBeenCalledTimes(2);
+  expect(session.send).not.toHaveBeenCalled();
+});
+
 it('can recover a readiness event emitted before subscription using the session event history', async () => {
   const { client, session, emit, listeners } = fixture();
   session.getEvents.mockResolvedValueOnce([{ type: 'session.start', data: { producer: 'copilot-agent' } }]);

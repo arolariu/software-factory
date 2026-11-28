@@ -56,6 +56,8 @@ it('loads only enabled models on demand and validates the selected effort agains
   });
   const configured = { ...input, overrides: { model: 'm1', reasoningEffort: 'high' } };
   models.mockResolvedValueOnce(null);
+  expect((await adapter.modelOptions(requester, 'conn', {})).models.availability.available).toBe(false);
+  models.mockResolvedValueOnce(null);
   await expect(adapter.authorize(requester, 'conn', configured)).rejects.toThrow('TEMPORARILY_UNAVAILABLE');
   expect(await adapter.authorize(requester, 'conn', configured)).toEqual(binding);
   await expect(adapter.authorize(requester, 'conn', { ...configured, overrides: { model: 'm2' } })).resolves.toBeUndefined();
@@ -67,6 +69,17 @@ it('loads only enabled models on demand and validates the selected effort agains
   models.mockResolvedValueOnce([]);
   await expect(adapter.launch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
   expect(probe).toHaveBeenCalledOnce();
+});
+
+it('does not silently downgrade an explicit model when catalog access is unavailable', async () => {
+  const { resolveConnection, resolveAccount, verify, issue, probe } = fixture();
+  const adapter = createGitHubCloudAdmission(approved, { resolveConnection, resolveAccount, verify, issue, probe });
+  expect(await adapter.modelOptions(requester, 'conn', {})).toMatchObject({
+    launch: { available: true }, models: { availability: { available: false } },
+  });
+  await expect(adapter.authorize(requester, 'conn', { ...input, overrides: { model: 'requested' } })).resolves.toBeUndefined();
+  expect(verify).not.toHaveBeenCalled();
+  expect(probe).not.toHaveBeenCalled();
 });
 
 it('does not disclose the catalog if the selected consent or repository changes while models are loading', async () => {
