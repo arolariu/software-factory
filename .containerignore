@@ -45,12 +45,14 @@ src/server/persistence/**
 !src/server/persistence/007-supervised-starts.sql
 !src/server/persistence/008-task-controls.sql
 !src/server/persistence/009-task-sdk-usage.sql
+!src/server/persistence/010-task-start-options.sql
 !src/server/persistence/task-usage.ts
 !src/server/tasks/
 src/server/tasks/**
 !src/server/tasks/supervised-launch.ts
 !src/server/tasks/cloud-launch.ts
 !src/server/tasks/cloud-session-link.ts
+!src/server/tasks/launch-preferences.ts
 !src/server/tasks/cloud-launch.test.ts
 !src/server/tasks/github-cloud-admission.ts
 !src/server/tasks/github-cloud-admission.test.ts

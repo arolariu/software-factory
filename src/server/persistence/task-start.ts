@@ -5,11 +5,13 @@ import { sha256Hex } from '../digest.js';
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 import { verifiedCloudSessionUrl } from '../tasks/cloud-session-link.js';
+import { launchPreferences, type LaunchPreferences } from '../tasks/launch-preferences.js';
 
 export type StartBinding = { connectionId: string; repoId: string; identityId: string; generation: number; scope: string };
 type Gate = (requester: Requester, connectionId: string, input: StartTask) => StartBinding | undefined;
 export type StartClaim = StartBinding & {
   taskId: string; requesterId: string; requestedSessionId: string; copilotAccountId: string; workItemKey: string; startRequestId: string;
+  overrides?: LaunchPreferences;
 };
 
 // This store does not authorize or perform effects. Its caller must prove live
@@ -23,21 +25,30 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
   `);
   const eligible = (binding: StartBinding, requesterId: string) =>
     connection.get(binding.connectionId, requesterId, binding.repoId, binding.identityId, binding.generation) !== undefined;
-  const load = db.prepare<[string], StartClaim & { state: string; observedState: string | null }>(`
+  const load = db.prepare<[string], StartClaim & {
+    state: string; observedState: string | null; model: string | null; reasoningEffort: string | null;
+  }>(`
     SELECT t.id AS taskId, t.connection_id AS connectionId, t.requester_id AS requesterId, t.repo_id AS repoId,
       t.repo_identity_id AS identityId, t.work_item_key AS workItemKey, t.runtime_scope AS scope,
       t.requested_session_id AS requestedSessionId, s.copilot_account_id AS copilotAccountId, t.start_request_id AS startRequestId,
-      s.connection_generation AS generation, t.state, o.session_state AS observedState
-    FROM tasks t JOIN task_starts s ON s.task_id=t.id LEFT JOIN task_observations o ON o.task_id=t.id WHERE t.id=?
+      s.connection_generation AS generation, t.state, o.session_state AS observedState, p.model, p.reasoning_effort AS reasoningEffort
+    FROM tasks t JOIN task_starts s ON s.task_id=t.id LEFT JOIN task_observations o ON o.task_id=t.id
+    LEFT JOIN task_start_options p ON p.task_id=t.id WHERE t.id=?
   `);
   const bindingFields = (claim: StartClaim) => [
     claim.taskId, claim.requesterId, claim.connectionId, claim.repoId, claim.identityId, claim.generation,
     claim.scope, claim.workItemKey, claim.requestedSessionId, claim.copilotAccountId, claim.startRequestId,
+    claim.overrides?.model, claim.overrides?.reasoningEffort,
   ];
+  function toClaim(row: NonNullable<ReturnType<typeof load.get>>): StartClaim {
+    const { state: _state, observedState: _observedState, model, reasoningEffort, ...claim } = row;
+    return model === null ? claim : { ...claim, overrides: reasoningEffort === null ? { model } : { model, reasoningEffort } };
+  }
   function matching(verified: StartClaim) {
     const stored = load.get(verified.taskId);
+    const expected = bindingFields(verified);
     return stored && ['starting', 'needs_recovery'].includes(stored.state) &&
-      bindingFields(stored).every((part, index) => part === bindingFields(verified)[index]) ? stored : undefined;
+      bindingFields(toClaim(stored)).every((part, index) => part === expected[index]) ? stored : undefined;
   }
 
   const reserve = db.transaction((requester: Requester, id: string, input: StartTask, proof?: StartBinding) => {
@@ -45,15 +56,16 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     if (!binding) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
     if (binding.connectionId !== id || !eligible(binding, requester.id)) throw new ApiFailure('ACCESS_UNVERIFIED');
     if (!/^[1-9][0-9]*$/.test(input.workItemKey)) throw new ApiFailure('INVALID_REQUEST');
-    if (input.overrides && Object.keys(input.overrides).length) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
-    const digest = sha256Hex(JSON.stringify([id, input.workItemKey, input.copilotAccountId]));
+    const overrides = launchPreferences(input.overrides);
+    const choices = overrides ? [overrides.model, overrides.reasoningEffort ?? null] : [];
+    const digest = sha256Hex(JSON.stringify([id, input.workItemKey, input.copilotAccountId, ...choices]));
     const previous = db.prepare<[string, string], { id: string; request_hash: string; generation: number; scope: string }>(`
       SELECT t.id, s.request_hash, s.connection_generation AS generation, t.runtime_scope AS scope
       FROM tasks t LEFT JOIN task_starts s ON s.task_id=t.id
       WHERE t.requester_id=? AND t.start_request_id=?
     `).get(requester.id, input.startRequestId);
     if (previous) {
-      const legacy = sha256Hex(JSON.stringify([id, previous.generation, previous.scope, input.workItemKey, input.copilotAccountId]));
+      const legacy = sha256Hex(JSON.stringify([id, previous.generation, previous.scope, input.workItemKey, input.copilotAccountId, ...choices]));
       if (previous.request_hash !== digest && previous.request_hash !== legacy) throw new ApiFailure('REQUEST_ID_REUSED');
       return { taskId: previous.id, state: 'queued' } as const;
     }
@@ -71,19 +83,24 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
       input.startRequestId, binding.scope, randomUUID(), at, at,
     );
     db.prepare('INSERT INTO task_starts VALUES (?,?,?,?)').run(taskId, digest, binding.generation, input.copilotAccountId);
+    if (overrides) {
+      db.prepare('INSERT INTO task_start_options(task_id,model,reasoning_effort) VALUES (?,?,?)')
+        .run(taskId, overrides.model, overrides.reasoningEffort ?? null);
+    }
     return { taskId, state: 'queued' } as const;
   });
 
   const claim = db.transaction((id: string, proof?: StartBinding) => {
     const stored = load.get(id);
     if (stored?.state !== 'queued') return undefined;
-    const { state: _state, observedState: _observedState, ...current } = stored;
+    const current = toClaim(stored);
     if (!eligible(current, current.requesterId)) {
       db.prepare("UPDATE tasks SET state='failed',updated_at=? WHERE id=?").run(now(), id);
       return undefined;
     }
     const binding = proof ?? authorize({ id: current.requesterId }, current.connectionId, {
       workItemKey: current.workItemKey, copilotAccountId: current.copilotAccountId, startRequestId: current.startRequestId,
+      ...(current.overrides && { overrides: current.overrides }),
     });
     if (binding?.connectionId !== current.connectionId || binding.repoId !== current.repoId ||
       binding.identityId !== current.identityId || binding.generation !== current.generation || binding.scope !== current.scope) return undefined;
@@ -126,17 +143,14 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     recovery(requester: Requester, taskId: string): StartClaim | undefined {
       const current = load.get(taskId);
       if (current?.state !== 'needs_recovery' || current.requesterId !== requester.id) return undefined;
-      const { state: _state, observedState: _observedState, ...claim } = current;
-      return claim;
+      return toClaim(current);
     },
     next() {
       const row = db.prepare<[], { id: string }>(`
         SELECT t.id FROM tasks t JOIN task_starts s ON s.task_id=t.id WHERE t.state='queued' ORDER BY t.created_at,t.id LIMIT 1
       `).get();
       const current = row && load.get(row.id);
-      if (!current) return undefined;
-      const { state: _state, observedState: _observedState, ...claim } = current;
-      return claim;
+      return current && toClaim(current);
     },
     requireAuthorization(candidate: StartClaim) {
       return db.prepare(`UPDATE tasks SET state='needs_auth',updated_at=?

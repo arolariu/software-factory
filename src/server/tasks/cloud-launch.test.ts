@@ -33,7 +33,7 @@ const request = {
 
 it('waits for the remote worker and a matching consumed-turn event, not the SDK message ID', async () => {
   const { client, session, emit, listeners } = fixture();
-  const pending = dispatchCloudTask(client, { ...request, expectedLogin: 'Example' });
+  const pending = dispatchCloudTask(client, { ...request, expectedLogin: 'Example', model: 'm1', reasoningEffort: 'low' });
   await vi.waitFor(() => expect(listeners.size).toBe(1));
   emit({ type: 'session.start', data: { producer: 'local-cli' } });
   expect(session.send).not.toHaveBeenCalled();
@@ -51,7 +51,7 @@ it('waits for the remote worker and a matching consumed-turn event, not the SDK 
   expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
   expect(listeners.size).toBe(0);
   expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
-    sessionId: request.requestedSessionId, cloud: { repository: request.repository },
+    sessionId: request.requestedSessionId, cloud: { repository: request.repository }, model: 'm1', reasoningEffort: 'low',
   }));
   expect(client.createSession.mock.lastCall?.[0].onPermissionRequest()).toEqual({
     kind: 'denied-no-approval-rule-and-could-not-request-from-user',

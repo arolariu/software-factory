@@ -60,8 +60,12 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     sessionId: request.requestedSessionId, sessionUrl: `https://github.com/copilot/tasks/${request.requestedSessionId}`,
     usage: { nanoAiu: 0, premiumRequests: 0.125 },
   }));
+  const inspect = vi.fn(async (_token: string) => ({
+    models: [{ id: 'm1', name: 'Approved model', policy: 'enabled', reasoning: ['low', 'high'], defaultReasoning: 'high' }],
+    quota: [],
+  }));
   const auth = createConfiguredPortal(data, { origin, registry }, openCredentialVault(join(root, 'credentials.sqlite'), randomBytes(32)),
-    randomBytes(32), transport, undefined, { approvedTarget: { repoId, ownerId }, probe });
+    randomBytes(32), transport, inspect, { approvedTarget: { repoId, ownerId }, probe });
   const server = await buildApp({ db: data, staticRoot: root, build: { revision: null, builtAt: null, runUrl: null }, portal: auth.portal });
   try {
     const identity = auth.identity;
@@ -85,8 +89,13 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     identity.setDefaultCopilotAccount(principal, account.id);
     expect((await server.inject({ url: optionsUrl, headers })).json().launch.available).toBe(true);
     expect(transport).not.toHaveBeenCalled();
+    expect(inspect).not.toHaveBeenCalled();
+    expect((await server.inject({ url: `${optionsUrl}?includeModels=1`, headers })).json().models).toEqual({
+      availability: { available: true }, items: [{ id: 'm1', name: 'Approved model', supportedEfforts: ['low', 'high'] }],
+    });
+    expect(inspect).toHaveBeenCalledExactlyOnceWith('ghu_copilot');
     const requestTask = () => server.inject({ method: 'POST', url: `/api/connections/${connection.id}/tasks`, headers,
-      payload: { startRequestId: 'once', workItemKey: '17', copilotAccountId: account.id } });
+      payload: { startRequestId: 'once', workItemKey: '17', copilotAccountId: account.id, overrides: { model: 'm1', reasoningEffort: 'high' } } });
     upstreamAccount = 43;
     expect((await requestTask()).json().code).toBe('ACCESS_UNVERIFIED');
     upstreamAccount = 42;
@@ -110,7 +119,9 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     }, { timeout: 3000 });
     expect(probe).toHaveBeenCalledOnce();
     expect(probe.mock.calls[0]?.[0]).toBe('ghu_copilot');
-    expect(probe.mock.calls[0]?.[1]).toMatchObject({ expectedLogin: 'me', repository: { owner: 'me', name: 'disposable' } });
+    expect(probe.mock.calls[0]?.[1]).toMatchObject({
+      expectedLogin: 'me', repository: { owner: 'me', name: 'disposable' }, model: 'm1', reasoningEffort: 'high',
+    });
     expect(JSON.stringify(probe.mock.calls[0]?.[1])).not.toContain('Private fixture');
   } finally {
     await server.close();

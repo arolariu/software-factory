@@ -79,6 +79,116 @@ const issueDetail = (available: boolean) => ({
   description: { format: 'text', content: 'Startup instructions.' }, comments: { items: [], nextCursor: null },
 });
 
+it.each(['low', ''] as const)('loads the model catalog on demand and preserves the selected reasoning (%s)', async (reasoning) => {
+  const starts = vi.fn((_options: RequestInit) => Response.json({ taskId: 'task-43', state: 'queued' }, { status: 202 }));
+  const catalog = vi.fn(() => Response.json({ ...launchOptions, modelPicker: true, models: {
+    availability: { available: true }, items: [
+      { id: 'm1', name: 'Model One', supportedEfforts: ['low', 'high'] },
+      { id: 'm2', name: 'Model Two', supportedEfforts: [] },
+    ],
+  } }));
+  browse('/', (url, init) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return catalog();
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url.endsWith('/tasks') && init) return starts(init);
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  await expect.element(page.getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
+  expect(catalog).not.toHaveBeenCalled();
+  await press('Configure model');
+  await page.getByLabelText('Model', { exact: true }).selectOptions('m1');
+  await page.getByLabelText('Reasoning effort').selectOptions('high');
+  await page.getByLabelText('Model', { exact: true }).selectOptions('m2');
+  await expect.element(page.getByLabelText('Reasoning effort')).not.toBeInTheDocument();
+  await page.getByLabelText('Model', { exact: true }).selectOptions('m1');
+  await page.getByLabelText('Reasoning effort').selectOptions(reasoning);
+  await press('Start with configuration');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task queued'));
+  const submitted = JSON.parse(String(starts.mock.calls[0]?.[0].body));
+  expect(submitted).toMatchObject({ workItemKey: '42', copilotAccountId: 'approved-account' });
+  expect(submitted.overrides).toEqual({ model: 'm1', ...(reasoning && { reasoningEffort: reasoning }) });
+  expect(catalog).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the default start available when model acquisition fails or switches accounts', async () => {
+  const catalog = vi.fn()
+    .mockReturnValueOnce(new Response(null, { status: 502 }))
+    .mockReturnValueOnce(Response.json({ ...launchOptions, copilotAccountId: 'other-account', models: { availability: { available: true }, items: [] } }))
+    .mockReturnValueOnce(Response.json({ ...launchOptions, models: { availability: { available: false }, items: [] } }))
+    .mockReturnValueOnce(Response.json({ ...launchOptions, models: { availability: { available: true }, items: [] } }));
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return catalog() as Response;
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  for (const message of ['Could not load models', 'Models are unavailable', 'Models are unavailable', 'No models are approved']) {
+    await press('Configure model');
+    await vi.waitFor(() => expect(target.textContent).toContain(message));
+    await expect.element(page.getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
+    await press('Hide configuration');
+  }
+  await press('Configure model');
+  expect(target.textContent).toContain('No models are approved');
+  expect(catalog).toHaveBeenCalledTimes(4);
+});
+
+it.each([200, 502])('does not re-fetch pending models or restore closed issue state after response %i', async (status) => {
+  const delayed = Promise.withResolvers<Response>();
+  const parsed = Promise.withResolvers<void>();
+  const result = Response.json({ ...launchOptions, models: { availability: { available: true }, items: [
+    { id: 'm1', name: 'Late model', supportedEfforts: [] },
+  ] } }, { status });
+  const json = result.json.bind(result);
+  vi.spyOn(result, 'json').mockImplementation(async () => { const body = await json(); parsed.resolve(); return body; });
+  const catalog = vi.fn(() => delayed.promise);
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return catalog();
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  await press('Configure model');
+  await vi.waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+  await press('Hide configuration');
+  await press('Configure model');
+  expect(catalog).toHaveBeenCalledOnce();
+  await press('Document startup');
+  delayed.resolve(result);
+  await parsed.promise;
+  await tick();
+  expect(target.textContent).not.toContain('Late model');
+  expect(target.textContent).not.toContain('Start with configuration');
+});
+
+it.each(['eligibility', 'model catalog'] as const)('clears task controls and repository evidence if %s loses access', async (phase) => {
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return phase === 'eligibility'
+      ? Response.json({ code: 'ACCESS_DENIED' }, { status: 403 }) : Response.json({ ...launchOptions, modelPicker: true });
+    if (url.endsWith('/task-options?includeModels=1')) return Response.json({ code: 'ACCESS_DENIED' }, { status: 403 });
+    throw new Error('Unexpected request');
+  });
+  await press('Document startup');
+  if (phase === 'model catalog') await press('Configure model');
+  await vi.waitFor(() => expect(target.textContent).toContain('Repository access was denied'));
+  expect(target.textContent).not.toContain('Document startup');
+  expect(target.textContent).not.toContain('Start task');
+});
+
 it('retries an uncertain start with the same request ID and retains the queued receipt when reopening the issue', async () => {
   const first = Promise.withResolvers<Response>();
   const starts: RequestInit[] = [];
@@ -251,10 +361,10 @@ it('cannot restore a launch receipt after repository access is lost while the re
   expect(target.textContent).not.toContain('Task queued');
 });
 
-it('drops task eligibility that arrives after the issue is closed without authorizing the next panel', async () => {
+it.each([200, 403])('ignores a late eligibility response (%i) after closing the issue', async (status) => {
   const delayed = Promise.withResolvers<Response>();
   const parsed = Promise.withResolvers<void>();
-  const response = Response.json(launchOptions);
+  const response = Response.json(status === 200 ? launchOptions : { code: 'ACCESS_DENIED' }, { status });
   const json = response.json.bind(response);
   vi.spyOn(response, 'json').mockImplementation(async () => { const body = await json(); parsed.resolve(); return body; });
   let allowed = true;

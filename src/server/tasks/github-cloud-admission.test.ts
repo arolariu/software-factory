@@ -16,14 +16,18 @@ function fixture() {
   const resolveAccount = vi.fn((): typeof account | undefined => account);
   const verify = vi.fn(async () => ({ token: 'ghu_fixture', login: 'owner' }));
   const issue = vi.fn(async () => ({ key: '17', state: 'open' as 'open' | 'closed' }));
+  const models = vi.fn(async () => [
+    { id: 'm1', name: 'Approved model', policy: 'enabled', reasoning: ['low', 'high'], defaultReasoning: 'high' },
+    { id: 'm2', name: 'Denied model', policy: 'disabled', reasoning: ['high'], defaultReasoning: 'high' },
+  ]);
   const probe = vi.fn(async (_token: string, request: { requestedSessionId: string }): Promise<{
     sessionId: string; usage: { nanoAiu: number | null; premiumRequests: number | null } | null;
   }> => ({
     sessionId: request.requestedSessionId, usage: { nanoAiu: 0, premiumRequests: 0.125 },
   }));
   return {
-    resolveConnection, resolveAccount, verify, issue, probe,
-    adapter: createGitHubCloudAdmission(approved, { resolveConnection, resolveAccount, verify, issue, probe }),
+    resolveConnection, resolveAccount, verify, issue, probe, models,
+    adapter: createGitHubCloudAdmission(approved, { resolveConnection, resolveAccount, verify, issue, probe, models }),
   };
 }
 
@@ -33,11 +37,44 @@ it('advertises only the approved repository and its matching Copilot grant witho
     copilotAccountId: 'copilot', launch: { available: true },
     featureBranch: { available: false }, models: { availability: { available: false } },
   });
+
   resolveAccount.mockReturnValueOnce({ ...account, subject: '43' });
   expect(adapter.describe(requester, 'conn', {})).toMatchObject({ copilotAccountId: null, launch: { available: false } });
   resolveConnection.mockReturnValueOnce({ ...connection, repositoryId: '82' });
   expect(adapter.describe(requester, 'conn', {})).toMatchObject({ launch: { available: false } });
   expect(verify).not.toHaveBeenCalled();
+});
+
+it('loads only enabled models on demand and validates the selected effort against a fresh catalog', async () => {
+  const { adapter, models, probe } = fixture();
+  expect(adapter.describe(requester, 'conn', {}).models.availability.available).toBe(false);
+  expect(models).not.toHaveBeenCalled();
+  const options = await adapter.modelOptions(requester, 'conn', {});
+  expect(options.models).toEqual({
+    availability: { available: true }, items: [{ id: 'm1', name: 'Approved model', supportedEfforts: ['low', 'high'] }],
+  });
+  const configured = { ...input, overrides: { model: 'm1', reasoningEffort: 'high' } };
+  expect(await adapter.authorize(requester, 'conn', configured)).toEqual(binding);
+  await expect(adapter.authorize(requester, 'conn', { ...configured, overrides: { model: 'm2' } })).resolves.toBeUndefined();
+  await expect(adapter.authorize(requester, 'conn', { ...configured, overrides: { model: 'm1', reasoningEffort: 'max' } }))
+    .resolves.toBeUndefined();
+  const claim = { ...binding, ...configured, taskId: 'task', requesterId: 'alice', requestedSessionId: 'exact-session' };
+  await adapter.launch(claim);
+  expect(probe.mock.lastCall?.[1]).toMatchObject({ model: 'm1', reasoningEffort: 'high' });
+  models.mockResolvedValueOnce([]);
+  await expect(adapter.launch(claim)).rejects.toThrow('ACCESS_UNVERIFIED');
+  expect(probe).toHaveBeenCalledOnce();
+});
+
+it('does not disclose the catalog if the selected consent or repository changes while models are loading', async () => {
+  const { adapter, models, resolveAccount } = fixture();
+  models.mockImplementationOnce(async () => {
+    resolveAccount.mockReturnValue(undefined);
+    return [{ id: 'm1', name: 'Approved model', policy: 'enabled', reasoning: [], defaultReasoning: 'low' }];
+  });
+  expect(await adapter.modelOptions(requester, 'conn', {})).toMatchObject({
+    copilotAccountId: null, launch: { available: false }, models: { items: [] },
+  });
 });
 
 it('cannot become eligible on a different provider, namespace, owner or account', async () => {

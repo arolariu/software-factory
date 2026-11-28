@@ -24,6 +24,7 @@
   } = $props();
 
   const panel = new AbortController();
+  const fieldId = $props.id();
   const cleanId = new RegExp(`^${opaqueIdSegment}$`);
   const scope = $derived(`${encodeURIComponent(connectionId)}/${encodeURIComponent(issue.key)}`);
   const attempt = $derived(attempts.get(scope));
@@ -31,6 +32,13 @@
   const unavailable = 'Task launch is unavailable for this issue.';
   let account = $state<string>();
   let status = $state('');
+  let canConfigure = $state(false);
+  let configured = $state(false);
+  let models = $state<ApiDto<'taskOptions'>['models']['items']>();
+  let modelNote = $state('');
+  let modelId = $state('');
+  let effort = $state('');
+  const selectedModel = $derived(models?.find((model) => model.id === modelId));
 
   onMount(() => {
     if (issue.launch.available && issue.taskId === null && !attempts.has(scope)) void loadOptions();
@@ -44,6 +52,7 @@
       if (panel.signal.aborted) return;
       if (options.launch.available && options.copilotAccountId && cleanId.test(options.copilotAccountId)) {
         account = options.copilotAccountId;
+        canConfigure = options.modelPicker === true;
         status = '';
       } else status = unavailable;
     } catch (error) {
@@ -51,9 +60,28 @@
     }
   }
 
-  async function start(accountId: string) {
+  async function toggleModels(accountId: string) {
+    configured = !configured;
+    if (!configured || models || modelNote === 'Loading models...') return;
+    modelNote = 'Loading models...';
+    try {
+      const options = await readPortal<ApiDto<'taskOptions'>>(`${path}/task-options?includeModels=1`, panel.signal);
+      if (panel.signal.aborted) return;
+      if (options.copilotAccountId === accountId && options.models.availability.available) {
+        models = options.models.items;
+        modelNote = models.length ? '' : 'No models are approved for this account.';
+      } else modelNote = 'Models are unavailable. You can still start with defaults.';
+    } catch (error) {
+      if (!panel.signal.aborted && !onAccessLost(error)) modelNote = 'Could not load models. Close and reopen configuration to retry.';
+    }
+  }
+
+  async function start(accountId: string, overrides?: StartTask['overrides']) {
     if (attempt && attempt.state !== 'retry') return;
-    const input = attempt?.input ?? { workItemKey: issue.key, copilotAccountId: accountId, startRequestId: crypto.randomUUID() };
+    const input = attempt?.input ?? {
+      workItemKey: issue.key, copilotAccountId: accountId, startRequestId: crypto.randomUUID(),
+      ...(overrides && { overrides }),
+    };
     const key = scope;
     const url = `${path}/tasks`;
     const pending = { input, state: 'starting' } as const;
@@ -100,6 +128,37 @@
   {:else if account}
     {@const selectedAccount = account}
     <button class="primary" type="button" onclick={() => void start(selectedAccount)}>Start task</button>
+    {#if canConfigure}
+      <button type="button" aria-expanded={configured} onclick={() => void toggleModels(selectedAccount)}>
+        {configured ? 'Hide configuration' : 'Configure model'}
+      </button>
+    {/if}
+    {#if configured}
+      <div class="model-options">
+        {#if modelNote}<p class="muted" role="status">{modelNote}</p>{/if}
+        {#if models?.length}
+          <div class="model-field">
+            <label for={`${fieldId}-model`}>Model</label>
+            <select id={`${fieldId}-model`} bind:value={modelId} onchange={() => { effort = ''; }}>
+              <option value="">Choose a model</option>
+              {#each models as model (model.id)}<option value={model.id}>{model.name}</option>{/each}
+            </select>
+          </div>
+          {#if selectedModel?.supportedEfforts.length}
+            <div class="model-field">
+              <label for={`${fieldId}-effort`}>Reasoning effort</label>
+              <select id={`${fieldId}-effort`} bind:value={effort}>
+                <option value="">Model default</option>
+                {#each selectedModel.supportedEfforts as choice}<option value={choice}>{choice}</option>{/each}
+              </select>
+            </div>
+          {/if}
+          <button type="button" disabled={!selectedModel} onclick={() => void start(selectedAccount, {
+            model: modelId, ...(effort && { reasoningEffort: effort }),
+          })}>Start with configuration</button>
+        {/if}
+      </div>
+    {/if}
   {:else}
     <p class="muted" role="status">{status}</p>
   {/if}
@@ -107,5 +166,8 @@
 
 <style>
   .task-launch { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .75rem; border-block-start: 1px solid var(--line); margin-block: .65rem; padding-block-start: .65rem; }
+  .model-options { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
+  .model-field { display: grid; gap: .2rem; min-inline-size: 0; max-inline-size: 100%; }
+  .model-options select { min-inline-size: 0; }
   p { margin: 0; overflow-wrap: anywhere; }
 </style>

@@ -98,6 +98,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
     },
     async issue(id, key, requester) { return (await repositories.issue(requester, id, key, { limit: '1' })).issue; },
     probe: launch.probe ?? probeCloudTaskWithSdk,
+    ...(catalog && { async models(requester: Requester, accountId: string) { return (await catalog(requester, accountId)).models; } }),
   }) : launch;
   const launcher = launchRuntime && createSupervisedLaunch(db, launchRuntime, identity.readGrant);
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -139,7 +140,13 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
       },
       tasks: {
         ...taskReads, unlinkedSessions: unavailable,
-        activity: unavailable, options: taskOptions, start: launcher?.reserve ?? disabled,
+        activity: unavailable,
+        options(requester, id, query) {
+          const base = taskOptions(requester, id, query);
+          return query.includeModels === '1' && launchRuntime?.modelOptions
+            ? launchRuntime.modelOptions(requester, id, query) : base;
+        },
+        start: launcher?.reserve ?? disabled,
       },
       operations: {
         read: repositories.read, sync: repositories.sync, input: disabled, archive: disabled, remove: disabled,

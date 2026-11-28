@@ -84,7 +84,7 @@ export const ApiSchemas = {
   prQuery: object({ state: names('active', 'closed'), ...pagination }),
   checkQuery: object({ headRevision: id, ...pagination }),
   taskQuery: object({ state: Type.Literal('active'), ...pagination }),
-  optionsQuery: object({ copilotAccountId: Type.Optional(id) }),
+  optionsQuery: object({ copilotAccountId: Type.Optional(id), includeModels: Type.Optional(Type.Literal('1')) }),
   callbackQuery: Type.Union([
     Type.Object({ state: cursor, code: nonempty, error: Type.Optional(Type.Never()) }),
     Type.Object({ state: cursor, error: nonempty, code: Type.Optional(Type.Never()) }),
@@ -172,6 +172,7 @@ export const ApiSchemas = {
   activity: availablePage(object({ id, at, kind: id, summary: text })),
   taskOptions: object({
     copilotAccountId: nullable(id), launch: availability, featureBranch: availability,
+    modelPicker: Type.Optional(Type.Literal(true)),
     models: object({
       availability, items: Type.Array(object({ id, name: text, supportedEfforts: Type.Array(nonempty) })),
     }),

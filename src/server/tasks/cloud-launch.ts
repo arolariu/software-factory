@@ -16,12 +16,15 @@ type CloudRequest = {
   expectedLogin?: string;
   turnId: string;
   prompt: string;
+  model?: string;
+  reasoningEffort?: string;
 };
 type Deny = { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
 export interface CloudLaunchClient {
   getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string; login?: string }>;
   createSession(config: {
     sessionId: string; cloud: { repository: CloudRequest['repository'] }; onPermissionRequest: () => Deny;
+    model?: string; reasoningEffort?: string;
   }): Promise<{
     sessionId: string;
     getEvents(): Promise<CloudEvent[]>;
@@ -60,6 +63,8 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
     const session = await Promise.race([
       client.createSession({
         sessionId: request.requestedSessionId, cloud: { repository: request.repository },
+        ...(request.model !== undefined && { model: request.model }),
+        ...(request.reasoningEffort !== undefined && { reasoningEffort: request.reasoningEffort }),
         onPermissionRequest: () => ({ kind: 'denied-no-approval-rule-and-could-not-request-from-user' }),
       }),
       cancel.promise,

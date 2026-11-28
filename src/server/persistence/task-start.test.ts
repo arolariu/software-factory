@@ -51,6 +51,37 @@ it('replays identical requests without duplicating tasks and rejects conflicting
   expect(db.prepare('SELECT count(*) AS n FROM tasks').get()).toEqual({ n: 1 });
 });
 
+it('preserves selected model and reasoning across a restarted worker and binds them to the receipt', () => {
+  const db = fixture();
+  const starts = createTaskStarts(db, () => binding);
+  const configured = { ...input, overrides: { model: 'gpt-test', reasoningEffort: 'high' } };
+  const { taskId } = starts.reserve(requester, binding.connectionId, configured);
+  expect(starts.reserve(requester, binding.connectionId, {
+    ...configured, overrides: { reasoningEffort: 'high', model: 'gpt-test' },
+  })).toEqual({ taskId, state: 'queued' });
+  expect(() => starts.reserve(requester, binding.connectionId, input)).toThrow('REQUEST_ID_REUSED');
+  expect(() => starts.reserve(requester, binding.connectionId, { ...configured, overrides: { ...configured.overrides, extraInstructions: 'not approved' } }))
+    .toThrow('CAPABILITY_UNAVAILABLE');
+  const restarted = createTaskStarts(db, () => binding);
+  const claim = restarted.claim(taskId);
+  if (!claim) throw new Error('Expected claimed start');
+  expect(claim.overrides).toEqual(configured.overrides);
+  expect(restarted.confirm({ ...claim, overrides: { model: 'gpt-test', reasoningEffort: 'low' } }, 'linked-session')).toBe(false);
+  expect(restarted.confirm(claim, 'linked-session')).toBe(true);
+});
+
+it('allows a model default but refuses free-form launch options without reserving work', () => {
+  const db = fixture();
+  const starts = createTaskStarts(db, () => binding);
+  for (const overrides of [{ reasoningEffort: 'high' }, { model: 'not/a/model' }, { model: 'm1', reasoningEffort: 'not valid' }]) {
+    expect(() => starts.reserve(requester, binding.connectionId, { ...input, overrides })).toThrow('INVALID_REQUEST');
+  }
+  expect(() => starts.reserve(requester, binding.connectionId, { ...input, overrides: { featureBranch: 'feature' } }))
+    .toThrow('CAPABILITY_UNAVAILABLE');
+  expect(db.prepare('SELECT count(*) AS n FROM tasks').get()).toEqual({ n: 0 });
+  const { taskId } = starts.reserve(requester, binding.connectionId, { ...input, overrides: { model: 'm1' } });
+  expect(starts.claim(taskId)?.overrides).toEqual({ model: 'm1' });
+});
 it('confirms only the exact claimed start; recovery never retries ambiguous work', () => {
   const db = fixture();
   const starts = createTaskStarts(db, () => binding);
