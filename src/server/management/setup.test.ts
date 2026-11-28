@@ -83,7 +83,7 @@ it('uses supplied native key material without creating a hosted key and fails cl
         expect(existing).toBe(true);
         return wrong;
       },
-    })).toThrow('does not match the existing vault');
+    })).toThrow('Could not open the native credential vault');
     expect(wrong.equals(Buffer.alloc(32))).toBe(true);
     expect(existsSync(join(root, 'management-vault.key'))).toBe(false);
     await openManagementRuntime(db, root, {
