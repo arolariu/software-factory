@@ -6,12 +6,13 @@ export type CloudEvent = { type: string; data?: { producer?: string; clientTurnI
 type CloudRequest = {
   requestedSessionId: string;
   repository: { owner: string; name: string };
+  expectedLogin?: string;
   turnId: string;
   prompt: string;
 };
 type Deny = { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
 export interface CloudLaunchClient {
-  getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string }>;
+  getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string; login?: string }>;
   createSession(config: {
     sessionId: string; cloud: { repository: CloudRequest['repository'] }; onPermissionRequest: () => Deny;
   }): Promise<{
@@ -32,6 +33,9 @@ export async function dispatchCloudTask(client: CloudLaunchClient, request: Clou
   try {
     const status = await Promise.race([client.getAuthStatus(), cancel.promise]);
     if (!status.isAuthenticated || status.authType !== 'token') throw new ApiFailure('COPILOT_REAUTH_REQUIRED');
+    if (request.expectedLogin && status.login?.toLowerCase() !== request.expectedLogin.toLowerCase()) {
+      throw new ApiFailure('ACCESS_UNVERIFIED');
+    }
     signal.throwIfAborted();
     const session = await Promise.race([
       client.createSession({

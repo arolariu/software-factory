@@ -42,7 +42,7 @@ git -C "$repo" archive "$revision" -- .npmrc package.json package-lock.json src 
   cd "$build"
   node "$npm_cli" ci --include=dev --ignore-scripts --strict-peer-deps --no-audit --no-fund
   BUILD_REVISION="$revision" node "$npm_cli" run build
-  rm -- dist/server/identity/copilot-access.js
+  rm -- dist/server/identity/copilot-access.js dist/server/tasks/copilot-cloud-trial.js
   node "$npm_cli" ci --omit=dev --include=optional --ignore-scripts --strict-peer-deps --no-audit --no-fund
   mv -- dist node_modules package.json "$staged/"
 )

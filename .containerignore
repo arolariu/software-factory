@@ -51,6 +51,8 @@ src/server/tasks/**
 !src/server/tasks/supervised-launch.ts
 !src/server/tasks/cloud-launch.ts
 !src/server/tasks/cloud-launch.test.ts
+!src/server/tasks/copilot-cloud-trial.ts
+!src/server/tasks/copilot-cloud-trial.test.ts
 !src/server/persistence/task-controls.ts
 !src/server/persistence/task-controls.test.ts
 !src/server/persistence/task-start.ts

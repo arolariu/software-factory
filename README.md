@@ -57,6 +57,16 @@ Model prices appear in the SDK-reported unit per token batch only if the catalog
 
 The supervised task worker can reserve and dispatch an exact requester/account/repository binding through an injected runtime. Where launch and account options are available, an open issue offers **Start task**. Retries reuse the original request, and the portal reports acceptance as queued rather than running. Its GitHub Cloud handshake requires worker readiness and a matching consumed-turn event; the SDK returning a message ID is not a delivery confirmation. Neither hosted nor desktop startup registers the cloud launcher. Enablement requires verified cloud entitlement, repository association, and correlated events on an approved disposable GitHub repository. No permission request is automatically approved.
 
+### Verify one cloud dispatch
+
+On a development host only, build Factory and choose an explicitly approved disposable **personal** GitHub.com repository containing a non-sensitive README. The GitHub App must be installed on that repository with the same Issues and Pull requests read permissions used by Factory. With the App's public Client ID in `FACTORY_GITHUB_CLIENT_ID`, run:
+
+```bash
+bash scripts/check-copilot-cloud.sh https://github.com/OWNER/REPOSITORY REPOSITORY_ID GITHUB_USER_ID
+```
+
+Use the canonical repository spelling and the immutable numeric GitHub IDs. The terminal asks you to confirm the repository and then approve a fresh device code. The trial verifies the repository ID, its owner, the App installation, and the SDK login before requesting one billable cloud session with a fixed README-summary prompt. It does not ask the agent to make or publish changes and does not auto-approve permission requests. On ambiguous delivery, inspect the printed session ID in GitHub before retrying. A successful receipt proves the readiness and consumed-turn handshake for that run, not task completion, remote stop, publication, or production enablement.
+
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 
 ## Test coverage

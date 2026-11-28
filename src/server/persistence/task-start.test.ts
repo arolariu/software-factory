@@ -199,11 +199,12 @@ it('holds a task whose pre-dispatch verification failed without starving the nex
   expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(allowed.taskId)).toEqual({ state: 'running' });
 });
 
-it.each(['wrong-receipt', 'connection-changed', 'runtime-error', 'interrupted'] as const)(
+it.each(['wrong-receipt', 'invalid-session-id', 'connection-changed', 'access-lost', 'runtime-error', 'interrupted'] as const)(
   'requires recovery without retrying when launch ends with %s',
   async (fault) => {
     const db = fixture();
     const controller = new AbortController();
+    let access: 'valid' | 'denied' = 'valid';
     let calls = 0;
     const launcher = createSupervisedLaunch(db, {
       authorize: async () => binding,
@@ -212,9 +213,13 @@ it.each(['wrong-receipt', 'connection-changed', 'runtime-error', 'interrupted'] 
         if (fault === 'runtime-error') throw new Error('Sensitive provider failure');
         if (fault === 'interrupted') controller.abort();
         if (fault === 'connection-changed') db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
-        return { claim: fault === 'wrong-receipt' ? { ...claim, copilotAccountId: 'another' } : claim, sessionId: 'remote-1' };
+        if (fault === 'access-lost') access = 'denied';
+        return {
+          claim: fault === 'wrong-receipt' ? { ...claim, copilotAccountId: 'another' } : claim,
+          sessionId: fault === 'invalid-session-id' ? 'https://other.example/session' : 'remote-1',
+        };
       },
-    }, () => 'valid');
+    }, () => access);
     const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
     await launcher.runNext(controller.signal);
     await launcher.runNext();

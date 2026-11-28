@@ -182,6 +182,10 @@ it.each([false, true])('signs in, connects and syncs through the app (supervised
     await vi.waitFor(async () => {
       expect((await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers })).json().code).toBe('ACCESS_DENIED');
     }, { timeout: 3000 });
+    if (enabled) {
+      expect((await server.inject({ url: `/api/connections/${repo.id}/task-options`, headers })).json().code)
+        .toBe('ACCESS_DENIED');
+    }
   } finally {
     await server.close();
     await auth.close();

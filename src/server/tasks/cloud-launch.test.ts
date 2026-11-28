@@ -14,7 +14,8 @@ function fixture() {
     send: vi.fn(async (_options: { prompt: string; clientTurnId: string }) => 'not-a-delivery-receipt'),
   };
   const client = {
-    getAuthStatus: vi.fn(async () => ({ isAuthenticated: true, authType: 'token' })),
+    getAuthStatus: vi.fn(async (): Promise<{ isAuthenticated: boolean; authType: string; login?: string }> =>
+      ({ isAuthenticated: true, authType: 'token', login: 'example' })),
     createSession: vi.fn(async (_config: Parameters<CloudLaunchClient['createSession']>[0]) => session),
   };
   return { client, emit, session, listeners };
@@ -29,7 +30,7 @@ const request = {
 
 it('waits for the remote worker and a matching consumed-turn event, not the SDK message ID', async () => {
   const { client, session, emit, listeners } = fixture();
-  const pending = dispatchCloudTask(client, request);
+  const pending = dispatchCloudTask(client, { ...request, expectedLogin: 'Example' });
   await vi.waitFor(() => expect(listeners.size).toBe(1));
   emit({ type: 'session.start', data: { producer: 'local-cli' } });
   expect(session.send).not.toHaveBeenCalled();
@@ -69,6 +70,11 @@ it('does not send on authentication failure, session mismatch, or interruption',
   client.getAuthStatus.mockResolvedValueOnce({ isAuthenticated: false, authType: 'none' });
   await expect(dispatchCloudTask(client, request)).rejects.toThrow('COPILOT_REAUTH_REQUIRED');
   expect(client.createSession).not.toHaveBeenCalled();
+  for (const login of ['different', undefined]) {
+    client.getAuthStatus.mockResolvedValueOnce({ isAuthenticated: true, authType: 'token', ...(login && { login }) });
+    await expect(dispatchCloudTask(client, { ...request, expectedLogin: 'Example' })).rejects.toThrow('ACCESS_UNVERIFIED');
+    expect(client.createSession).not.toHaveBeenCalled();
+  }
   client.createSession.mockResolvedValueOnce({ ...session, sessionId: 'unexpected-session' });
   await expect(dispatchCloudTask(client, request)).rejects.toThrow('ACCESS_UNVERIFIED');
   const controller = new AbortController();
