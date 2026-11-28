@@ -1,6 +1,6 @@
 # GitHub team runs
 
-**Status:** Proposed for review. Extends the [backend system design](2026-11-26-backend-system-design.md), the [internal API](2026-11-26-internal-api-design.md), the [portal design](2026-11-26-storage-and-container-design.md) and [Active Sessions](2026-11-26-active-sessions-attention-design.md). Builds on the supervised cloud launch on `feat/live-copilot`.
+**Status:** Proposed for review. Extends the [backend system design](2026-11-26-backend-system-design.md), the [internal API](2026-11-26-internal-api-design.md), the [portal design](2026-11-26-storage-and-container-design.md) and [Active Sessions](2026-11-26-active-sessions-attention-design.md). Builds on the supervised cloud launch on `feat/live-copilot`. The decision is recorded in [ADR 0001](../../adr/0001-github-runs-coordinate-hosted-copilot.md), and the C4 views, swimlanes and lifecycle are in [the diagrams](../../architecture/github-team-runs/README.md).
 
 ## Intent
 
@@ -163,6 +163,22 @@ The factory posts the findings as one PR comment authored by the requester. What
 
 Findings are model output, not instructions from the requester, so follow-ups mark them off as data. The factory never acts on review comments written by anyone else. What the agent reads on GitHub by itself is governed by GitHub's own handling.
 
+### Checks on Copilot's pushes (open decision)
+
+By default, GitHub doesn't run Actions workflows on commits that Copilot pushes until someone with write access selects **Approve and run workflows**. A repository can turn this off with the **Require approval for workflow runs** policy. GitHub warns that this can let unreviewed agent code reach Actions secrets or gain write access.
+
+Until the requester decides otherwise, this design assumes the default, in which the requester approves workflow runs on GitHub:
+
+- The piece waits with the reason "Checks need your approval on GitHub" and a link to the PR. The review round can finish before CI does.
+- The checks reader must tell apart four cases: checks awaiting approval, no checks at all, pending checks, and passed checks. That way, a piece is never ready just because CI never ran.
+- With no checks, the piece becomes ready and shows "No checks".
+- If checks are still pending when the bounded wait ends, the piece becomes ready and shows "Checks pending".
+
+Two alternatives remain open:
+
+- The repository turns the approval policy off. Runs become fully unattended, with GitHub's warning.
+- The factory approves workflow runs as the requester. This needs Actions: write in mode A, and is a new effect with its own proof. It carries the same exposure, under the requester's name.
+
 ### Run and piece states
 
 | Run state | Meaning |
@@ -174,16 +190,46 @@ Findings are model output, not instructions from the requester, so follow-ups ma
 | `waiting_for_merge` | No piece can progress until the requester merges a PR that another piece depends on. |
 | `ready_for_review` | Every piece is ready (with or without open findings) or merged. |
 | `completed` | Every piece's PR is merged or closed. |
-| `needs_attention` | Blocked on the requester: the plan was invalid twice, or a session failed. |
-| `needs_auth` | Blocked on the requester: a grant expired. |
-| `needs_recovery` | Blocked on the requester: the outcome of an external effect is uncertain. |
+| `needs_attention` | Blocked on the requester: planning needs a retry, or every remaining piece is blocked. |
+| `needs_auth` | Blocked on the requester: a grant expired or was revoked. |
+| `needs_recovery` | Blocked on the requester: the outcome of an effect on the whole run is uncertain. |
 | `rejected`, `stopped`, `failed` | Terminal. |
 
 Pieces move through `filed`, `blocked`, `implementing`, `in_review`, `revising`, `ready`, and finally `merged` or `closed`. `failed` and `needs_recovery` are the exceptions.
 
-A failed implementer session doesn't fail the run. The piece shows the error GitHub reported and offers **Retry piece**, which starts a new session only after the old one is terminal.
+A failed implementer session doesn't fail the run. The piece shows the error GitHub reported and offers **Retry piece**, which acts only after the old session is terminal. A piece links at most one PR, and the factory never closes PRs:
+
+| Situation | Mode A | Mode B |
+| --- | --- | --- |
+| No linked PR yet | Start a new implementer session. | Unassign Copilot, then assign it again, which creates a new task. |
+| A PR is already linked | Resume the original session if it accepts input. Otherwise, once Proof 9 passes, start a new session from the PR's head branch. Until then the piece stays blocked and links the PR. | Post an `@copilot` comment on the linked PR. |
+
+A branch that was left behind without a PR stays where it is, for the requester to delete.
 
 **Stop run** stops scheduling new work, cancels queued work, and asks active sessions to stop where the platform supports that. Where a cloud session can't be stopped through an API, the run stays `stopping` and links each live session on GitHub until that session is terminal. Stopping a run never closes issues or PRs.
+
+### Blockers and how a run gets unblocked
+
+A blocker belongs either to one piece or to the whole run. A piece's blocker stops only that piece, and the other pieces keep going.
+
+- **Piece blockers:** the implementer failed; Copilot is waiting for the requester (`waiting_for_user`); the reviewer failed; a piece effect is uncertain; a prerequisite PR was closed without merging.
+- **Run blockers:** planning failed, or the plan was invalid twice; a grant expired or was revoked; an effect on the whole run (filing pieces) is uncertain.
+
+The run moves to `needs_attention` only when planning needs a retry, or when every remaining piece is blocked on the requester.
+
+The requester has these ways out, offered only where they apply:
+
+| Action | What it does |
+| --- | --- |
+| **Retry planning** | Resumes the planner session if it accepts input. Otherwise it starts a new planner session with the last revision and the feedback. Revision numbering continues, and the 3-revision limit still applies. |
+| **Retry review** | Starts a new reviewer session on the current head. |
+| **Retry piece** | Restarts the implementer, as described in the previous table. |
+| **Recheck** | Reruns reconciliation for the effect that `needs_recovery` names. The run continues only when the evidence settles the outcome. |
+| **Stop run** | Available at any time. |
+
+When Copilot waits for the requester, the piece links the session on GitHub. The factory never answers on the requester's behalf. When a prerequisite PR is closed without merging, the pieces that depend on it stay blocked with that reason until **Retry piece** runs on the prerequisite.
+
+A run becomes `failed` only when it can't continue under its own binding: the parent issue or the repository is gone, or only a different account could act for it. If a request for changes can't resume the planner session after a long wait, the factory starts a new planner session with the last revision and the feedback. That attempt counts toward the revision limit.
 
 ## Trust, identity and permissions
 
@@ -204,6 +250,8 @@ The GitHub App requests the combined set. Existing installations must accept the
 The other mode stays available. The factory never uses installation tokens, PATs or another user's grant, and never falls back from one mode to the other on failure.
 
 Role instructions belong to the factory and are passed with each session, so nothing gets committed to the target repository. Using a repository's own `.github/agents` profiles is a later, opt-in extension.
+
+**Reconnecting mid-run.** A run keeps its requester, Copilot account, mode and models for its whole life. Its connection generation can move forward only through a verified reconnect of the same provider account on the same host. Effects that were in flight under the old generation are reconciled before any new effect is made. Removing the connection stops the run, as part of the existing "Stop and remove" flow. A different account never inherits a run: the run stays `needs_auth` until the original account reconnects or the requester stops the run.
 
 ## Observation, recovery and cost
 
@@ -273,22 +321,40 @@ Every route follows the [shared HTTP rules](2026-11-26-internal-api-design.md#sh
 | `GET /api/connections/{id}/runs` | `state=active`, with cursor and limit. Returns `Page<RunRow>`. |
 | `GET /api/runs/{id}` | Returns `RunDetail`: the state, mode and models; the current and previous plan revisions; the pieces with their sub-issue, PR, checks and review rounds; the sessions with their role, state, observation time and link; usage; and the actions available now. |
 | `POST /api/runs/{id}/plan-decisions` | Takes `{requestId, revision, decision: "approve" \| "request_changes" \| "reject", feedback?}` and returns `202 {operationId}`. Returns `409 PLAN_REVISION_CHANGED` or `409 PLAN_DECISION_CLOSED`. |
-| `POST /api/runs/{id}/pieces/{pieceId}/retry` | Takes `{requestId}` and returns `202 {operationId}` once the previous session is terminal, otherwise `409 PIECE_BUSY`. |
+| `POST /api/runs/{id}/actions` | Takes `{requestId, action: "retry_planning" \| "retry_review" \| "retry_piece" \| "recheck", pieceId?}` and returns `202 {operationId}`. Returns `409 ACTION_UNAVAILABLE` when the action doesn't apply to the current state, or `409 PIECE_BUSY` while that piece's previous session is still active. |
 | `POST /api/runs/{id}/stop` | Takes `{confirmed: true}` and returns `202 {operationId}`. |
 
-`StartRun` is `{startRequestId, workItemKey, copilotAccountId, implementerMode: "factory_sessions" | "github_assignment", implementer?: {model, reasoningEffort?}, reviewer?: {model, reasoningEffort?}}`, and the start fingerprint covers every field. `ActiveSessionSummary` rows gain `runId` and `role`, and `blocker` gains the value `plan_approval`.
+`StartRun` is `{startRequestId, workItemKey, copilotAccountId, implementerMode: "factory_sessions" | "github_assignment", implementer?: {model, reasoningEffort?}, reviewer?: {model, reasoningEffort?}}`, and the start fingerprint covers every field. `ActiveSessionSummary` rows gain `runId` and `role`, and `blocker` gains the values `plan_approval`, `checks_approval` and `agent_waiting`.
 
 ## Records and invariants
 
 The builder chooses the tables and migrations, but these must hold:
 
 - There is at most one nonterminal run per repository and parent issue, at most one active implementer per piece, and at most one active reviewer per piece and head SHA.
-- A run's requester, connection generation, Copilot account, mode and models are fixed when it starts. Reconnecting the same account restores access, but a different account never inherits a run.
+- A run's requester, Copilot account, mode and models are fixed when it starts. Its connection generation moves forward only through a verified reconnect of the same account, and a different account never inherits a run.
 - Plan revisions are append-only. Exactly one revision per run can be approved, and the pieces reference it.
 - Every session row records its role, mode and model; the task ID that was requested or discovered; the session URL, only once it is verified; the provider's state, with the time it was observed; and usage, with its source.
 - Every review round records the head SHA, the verdict and findings, and references to the posted comment and the follow-up.
 - Effect receipts never contain tokens or prompt text. Plan text, feedback, instructions and findings are protected application state with bounded size.
 - For GitHub, runs replace single-session tasks as what Active Sessions and Statistics read. The developer trial's task records remain readable as history. Azure DevOps has no execution path until its runner is designed.
+
+## Where the PoC runs
+
+Runs are available in the normal hosted and desktop startup, not in the single-repository developer trial. The trial discards its database on exit, so it can't prove restart safety. Two operator settings gate runs:
+
+- a feature flag, which can enable mode A alone until mode B's proofs pass;
+- an allowlist of repositories by immutable GitHub repository ID, holding the PoC's disposable repositories.
+
+Data persists in the normal data directory. The existing developer trial stays in place for the proofs.
+
+Admission keeps the existing identity rule: the repository grant and the Copilot grant must belong to the same verified GitHub user on the same host. It drops the trial's rule that the requester must own the repository. An organization repository works when all of these hold:
+
+- it is on the allowlist;
+- the App is installed on it;
+- the requester can write to it;
+- the Copilot policy allows cloud sessions.
+
+Proofs produce receipts that are kept with the release notes. Enabling runs, or a single mode, is an operator decision made through that configuration. The capability checker still evaluates the per-request facts (permissions, whether Copilot can be assigned, entitlement) on every start.
 
 ## Proofs before building the rest
 
@@ -306,12 +372,14 @@ Like the existing cloud trial, each proof runs from a development build against 
 6. The tasks API reports usage for each session in both modes.
 7. Three implementer sessions run in parallel under one account without being throttled or run one at a time.
 8. An active cloud session can be stopped through a supported API, confirmed by its terminal state.
+9. A new SDK session started from an existing PR's head branch commits to that PR instead of opening another one.
+10. On a Copilot-authored PR, the checks reader tells apart workflows awaiting approval, no checks, pending checks and passed checks.
 
 A failed proof disables only what depends on it.
 
 ## Delivery slices
 
-1. Proofs 1 to 8, as development scripts that produce receipts.
+1. Proofs 1 to 10, as development scripts that produce receipts.
 2. The run engine and plan approval on the operation loop: planner sessions, the run-options and plan-decision routes, and the run view's approval state.
 3. Filing pieces, with reconciliation.
 4. Mode A implementers and the review loop.
@@ -328,7 +396,10 @@ The PoC definition in [Intent](#intent) must hold. These fault tests must also p
 - an ambiguous issue creation, which must not be repeated;
 - a head SHA that moves during review;
 - a mode B task that never links;
-- a grant revoked mid-run;
+- a grant revoked mid-run, then a reconnect of the same account;
+- a prerequisite PR closed without merging;
+- checks that are held for approval, missing, or never complete;
+- Copilot waiting for the requester;
 - unmeasured usage;
 - a capability missing for only one mode.
 
