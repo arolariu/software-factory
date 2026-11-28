@@ -2,6 +2,7 @@ import { mkdtempDisposableSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CatalogReader } from './copilot-catalog.js';
+import type { CloudLaunchClient } from '../tasks/cloud-launch.js';
 
 export interface AccessReader {
   getAuthStatus(): Promise<{ isAuthenticated: boolean; authType?: string; login?: string }>;
@@ -19,15 +20,16 @@ interface RuntimeOptions {
 export type Runtime = AccessReader & { start(): Promise<void>; forceStop(): Promise<void> };
 export type RuntimeFactory<R extends Runtime> = (options: RuntimeOptions) => Promise<R>;
 
-export const createSdk: RuntimeFactory<Runtime & CatalogReader> = async (options) => {
+type CopilotRuntime = Runtime & CatalogReader & CloudLaunchClient;
+export const createSdk: RuntimeFactory<CopilotRuntime> = async (options) => {
   // The pinned SDK declaration exception is documented in the dependency baseline.
   const packageName: string = '@github/copilot-sdk';
-  const { CopilotClient } = await import(packageName) as { CopilotClient: new (options: RuntimeOptions) => Runtime & CatalogReader };
+  const { CopilotClient } = await import(packageName) as { CopilotClient: new (options: RuntimeOptions) => CopilotRuntime };
   return new CopilotClient(options);
 };
 
 export async function withCopilotRuntime<R extends Runtime, Result>(token: string,
-  create: RuntimeFactory<R>, read: (runtime: R) => Promise<Result>) {
+  create: RuntimeFactory<R>, read: (runtime: R) => Promise<Result>, timeoutMs = 20_000) {
   using directory = mkdtempDisposableSync(join(tmpdir(), 'factory-copilot-'));
   const { PATH, SystemRoot, TEMP, TMP } = process.env;
   const client = await create({
@@ -40,7 +42,7 @@ export async function withCopilotRuntime<R extends Runtime, Result>(token: strin
     return await Promise.race([
       client.start().then(() => read(client)),
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Copilot access check timed out.')), 20_000);
+        timer = setTimeout(() => reject(new Error('Copilot access check timed out.')), timeoutMs);
       }),
     ]);
   } finally {

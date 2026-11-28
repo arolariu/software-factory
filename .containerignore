@@ -46,6 +46,11 @@ src/server/persistence/**
 !src/server/persistence/008-task-controls.sql
 !src/server/persistence/009-task-sdk-usage.sql
 !src/server/persistence/task-usage.ts
+!src/server/tasks/
+src/server/tasks/**
+!src/server/tasks/supervised-launch.ts
+!src/server/tasks/cloud-launch.ts
+!src/server/tasks/cloud-launch.test.ts
 !src/server/persistence/task-controls.ts
 !src/server/persistence/task-controls.test.ts
 !src/server/persistence/task-start.ts

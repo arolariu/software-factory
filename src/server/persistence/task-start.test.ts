@@ -2,6 +2,7 @@ import SQLite from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { migrate } from './migrations.js';
 import { createTaskStarts } from './task-start.js';
+import { createSupervisedLaunch } from '../tasks/supervised-launch.js';
 
 const requester = { id: 'alice' };
 const input = { startRequestId: 'once', workItemKey: '7', copilotAccountId: 'copilot' };
@@ -107,3 +108,119 @@ it('releases a claimed start only after an exact definitive rejection', () => {
   expect(starts.confirm(claim, 'late')).toBe(false);
   expect(starts.reserve(requester, binding.connectionId, { ...input, startRequestId: 'replacement' }).taskId).not.toBe(taskId);
 });
+
+it('runs a durable request once and accepts only its exact receipt and measured usage', async () => {
+  const db = fixture();
+  let calls = 0;
+  const launcher = createSupervisedLaunch(db, {
+    authorize: async () => binding,
+    async launch(claim) {
+      calls++;
+      expect(db.inTransaction).toBe(false);
+      expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(claim.taskId)).toEqual({ state: 'starting' });
+      return {
+        claim, sessionId: 'remote-1',
+        usage: { aiCreditsStatus: 'complete', totalNanoAiu: 750, totalPremiumRequestCost: 0.5 },
+      };
+    },
+  }, () => 'valid');
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  expect(calls).toBe(0);
+  await Promise.all([launcher.runNext(), launcher.runNext()]);
+  expect(calls).toBe(1);
+  expect(await launcher.reserve(requester, binding.connectionId, input)).toMatchObject({ taskId });
+  await launcher.runNext();
+  expect(calls).toBe(1);
+  expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
+    .toEqual({ state: 'running', sdk_session_id: 'remote-1' });
+  expect(db.prepare('SELECT nano_aiu,premium_requests FROM task_sdk_usage WHERE task_id=?').get(taskId))
+    .toEqual({ nano_aiu: 750, premium_requests: 0.5 });
+});
+
+it('does not launch if fresh admission no longer verifies the queued account and connection', async () => {
+  const db = fixture();
+  let allowed = true;
+  const launcher = createSupervisedLaunch(db, {
+    authorize: async () => allowed ? binding : undefined,
+    launch: async () => { throw new Error('Must not contact the runtime'); },
+  }, () => 'valid');
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  allowed = false;
+  await launcher.runNext();
+  expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
+    .toEqual({ state: 'needs_auth', sdk_session_id: null });
+});
+
+it('denies a reservation without a verified grant and defers queued work when the worker is stopped', async () => {
+  const db = fixture();
+  let allowed = false;
+  let connection: 'valid' | 'unverified' = 'valid';
+  let scope = binding.scope;
+  const launcher = createSupervisedLaunch(db, {
+    authorize: async () => allowed ? { ...binding, scope } : undefined,
+    launch: async () => { throw new Error('Must not contact the runtime'); },
+  }, () => connection);
+  await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('CAPABILITY_UNAVAILABLE');
+  allowed = true;
+  connection = 'unverified';
+  await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('ACCESS_UNVERIFIED');
+  connection = 'valid';
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  await launcher.runNext(AbortSignal.abort());
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'queued' });
+  scope = 'different-repository';
+  await launcher.runNext();
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'needs_auth' });
+});
+
+it('holds a task whose pre-dispatch verification failed without starving the next queued task', async () => {
+  const db = fixture();
+  let dispatch = false;
+  const seen: string[] = [];
+  const launcher = createSupervisedLaunch(db, {
+    async authorize(_requester, _connection, candidate) {
+      if (dispatch && candidate.workItemKey === '7') throw new Error('Rejected by provider');
+      return binding;
+    },
+    async launch(claim) {
+      seen.push(claim.workItemKey);
+      return { claim, sessionId: 'remote-8' };
+    },
+  }, () => 'valid');
+  const held = await launcher.reserve(requester, binding.connectionId, input);
+  const allowed = await launcher.reserve(requester, binding.connectionId, { ...input, workItemKey: '8', startRequestId: 'next' });
+  db.prepare('UPDATE tasks SET created_at=1 WHERE id=?').run(held.taskId);
+  db.prepare('UPDATE tasks SET created_at=2 WHERE id=?').run(allowed.taskId);
+  dispatch = true;
+  await launcher.runNext();
+  await launcher.runNext();
+  expect(seen).toEqual(['8']);
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(held.taskId)).toEqual({ state: 'needs_auth' });
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(allowed.taskId)).toEqual({ state: 'running' });
+});
+
+it.each(['wrong-receipt', 'connection-changed', 'runtime-error', 'interrupted'] as const)(
+  'requires recovery without retrying when launch ends with %s',
+  async (fault) => {
+    const db = fixture();
+    const controller = new AbortController();
+    let calls = 0;
+    const launcher = createSupervisedLaunch(db, {
+      authorize: async () => binding,
+      async launch(claim) {
+        calls++;
+        if (fault === 'runtime-error') throw new Error('Sensitive provider failure');
+        if (fault === 'interrupted') controller.abort();
+        if (fault === 'connection-changed') db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
+        return { claim: fault === 'wrong-receipt' ? { ...claim, copilotAccountId: 'another' } : claim, sessionId: 'remote-1' };
+      },
+    }, () => 'valid');
+    const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+    await launcher.runNext(controller.signal);
+    await launcher.runNext();
+    expect(calls).toBe(1);
+    expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
+      .toEqual({ state: 'needs_recovery', sdk_session_id: null });
+    expect(db.prepare('SELECT count(*) AS n FROM task_sdk_usage').get()).toEqual({ n: 0 });
+  },
+);

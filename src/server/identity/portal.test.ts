@@ -7,10 +7,11 @@ import { buildApp } from '../build-app.js';
 import { migrate } from '../persistence/migrations.js';
 import { openDatabase } from '../persistence/open.js';
 import { openIdentityPortal } from './portal.js';
+import type { StartClaim } from '../persistence/task-start.js';
 
 const origin = 'https://factory.example';
 
-it('signs in, connects and syncs read-only through the app, without enabling mutations', async () => {
+it.each([false, true])('signs in, connects and syncs through the app (supervised runtime supplied: %s)', async (enabled) => {
   const root = mkdtempSync(join(tmpdir(), 'factory-live-composition-'));
   const data = openDatabase(join(root, 'factory.sqlite'));
   migrate(data);
@@ -35,7 +36,17 @@ it('signs in, connects and syncs read-only through the app, without enabling mut
       id: 21, account: { id: 13 }, permissions: { issues: 'read', pull_requests: 'read' },
     }] }))
     .mockResolvedValueOnce(Response.json({ repositories: [{ id: 91 }] }));
-  const auth = openIdentityPortal(data, root, { configFile, keyFile }, transport);
+  const authorize = vi.fn(async () => {
+    const stored = data.prepare<[], {
+      connectionId: string; repoId: string; identityId: string; generation: number;
+    }>('SELECT id AS connectionId,repo_id AS repoId,identity_id AS identityId,generation FROM repo_connections').get();
+    return stored && { ...stored, scope: 'github.com:13:91' };
+  });
+  const launch = vi.fn(async (claim: Readonly<StartClaim>) => ({
+    claim, sessionId: 'fixture-launch',
+    usage: { aiCreditsStatus: 'complete', totalNanoAiu: 10 },
+  }));
+  const auth = openIdentityPortal(data, root, { configFile, keyFile }, transport, enabled ? { authorize, launch } : undefined);
   const server = await buildApp({
     db: data, staticRoot: root, build: { revision: null, builtAt: null, runUrl: null }, portal: auth.portal,
   });
@@ -86,12 +97,21 @@ it('signs in, connects and syncs read-only through the app, without enabling mut
     });
     expect((await server.inject('/api/tasks/fixture-task')).statusCode).toBe(401);
     expect(transport).toHaveBeenCalledTimes(7);
-    const attempt = (repoId: string) => server.inject({
-      method: 'POST', url: `/api/connections/${repoId}/tasks`, headers,
+    const attempt = (repoId: string, requestHeaders = headers) => server.inject({
+      method: 'POST', url: `/api/connections/${repoId}/tasks`, headers: requestHeaders,
       payload: { workItemKey: '1', copilotAccountId: 'not-configured', startRequestId: 'request-one' },
     });
-    expect((await attempt(repo.id)).json().code).toBe('CAPABILITY_UNAVAILABLE');
+    expect((await attempt(repo.id, { ...headers, origin: 'https://other.example' })).statusCode).toBe(403);
     expect((await attempt('unknown')).json().code).toBe('NOT_FOUND');
+    expect(authorize).not.toHaveBeenCalled();
+    const launched = await attempt(repo.id);
+    if (enabled) {
+      expect(launched.statusCode).toBe(202);
+      expect((await attempt(repo.id)).json()).toEqual(launched.json());
+      expect(launch).not.toHaveBeenCalled();
+    } else {
+      expect(launched.json().code).toBe('CAPABILITY_UNAVAILABLE');
+    }
     expect((await server.inject({ method: 'POST', url: '/api/tasks/unknown/archive', headers, payload: { confirmed: true } }))
       .json().code).toBe('NOT_FOUND');
     const issues = await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers });
@@ -109,6 +129,16 @@ it('signs in, connects and syncs read-only through the app, without enabling mut
       .mockResolvedValueOnce(Response.json([]))
       .mockResolvedValueOnce(Response.json([]));
     auth.start();
+    if (enabled) {
+      const location = launched.headers.location;
+      if (typeof location !== 'string') throw new Error('Missing task receipt');
+      await vi.waitFor(async () => {
+        expect((await server.inject({ url: location, headers })).json()).toMatchObject({
+          task: { state: 'running' }, sdkUsage: { nanoAiu: 10, premiumRequests: null },
+        });
+      }, { timeout: 3000 });
+      expect(launch).toHaveBeenCalledTimes(1);
+    }
     await vi.waitFor(async () => {
       expect((await server.inject({ url: receipt, headers })).json().state).toBe('completed');
     }, { timeout: 3000 });

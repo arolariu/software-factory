@@ -5,9 +5,11 @@ import { sha256Hex } from '../digest.js';
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 
-type Binding = { connectionId: string; repoId: string; identityId: string; generation: number; scope: string };
-type Gate = (requester: Requester, connectionId: string, input: StartTask) => Binding | undefined;
-type Claim = Binding & { taskId: string; requesterId: string; requestedSessionId: string; copilotAccountId: string; workItemKey: string; startRequestId: string };
+export type StartBinding = { connectionId: string; repoId: string; identityId: string; generation: number; scope: string };
+type Gate = (requester: Requester, connectionId: string, input: StartTask) => StartBinding | undefined;
+export type StartClaim = StartBinding & {
+  taskId: string; requesterId: string; requestedSessionId: string; copilotAccountId: string; workItemKey: string; startRequestId: string;
+};
 
 // This store does not authorize or perform effects. Its caller must prove live
 // capability and identity before reservation, and verify exact runtime receipts.
@@ -18,27 +20,27 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
       AND c.retired_at IS NULL AND c.removal_requested_at IS NULL
       AND r.provider='github' AND r.canonical_host='github.com'
   `);
-  const eligible = (binding: Binding, requesterId: string) =>
+  const eligible = (binding: StartBinding, requesterId: string) =>
     connection.get(binding.connectionId, requesterId, binding.repoId, binding.identityId, binding.generation) !== undefined;
-  const load = db.prepare<[string], Claim & { state: string; observedState: string | null }>(`
+  const load = db.prepare<[string], StartClaim & { state: string; observedState: string | null }>(`
     SELECT t.id AS taskId, t.connection_id AS connectionId, t.requester_id AS requesterId, t.repo_id AS repoId,
       t.repo_identity_id AS identityId, t.work_item_key AS workItemKey, t.runtime_scope AS scope,
       t.requested_session_id AS requestedSessionId, s.copilot_account_id AS copilotAccountId, t.start_request_id AS startRequestId,
       s.connection_generation AS generation, t.state, o.session_state AS observedState
     FROM tasks t JOIN task_starts s ON s.task_id=t.id LEFT JOIN task_observations o ON o.task_id=t.id WHERE t.id=?
   `);
-  const bindingFields = (claim: Claim) => [
+  const bindingFields = (claim: StartClaim) => [
     claim.taskId, claim.requesterId, claim.connectionId, claim.repoId, claim.identityId, claim.generation,
     claim.scope, claim.workItemKey, claim.requestedSessionId, claim.copilotAccountId, claim.startRequestId,
   ];
-  function matching(verified: Claim) {
+  function matching(verified: StartClaim) {
     const stored = load.get(verified.taskId);
     return stored && ['starting', 'needs_recovery'].includes(stored.state) &&
       bindingFields(stored).every((part, index) => part === bindingFields(verified)[index]) ? stored : undefined;
   }
 
-  const reserve = db.transaction((requester: Requester, id: string, input: StartTask) => {
-    const binding = authorize(requester, id, input);
+  const reserve = db.transaction((requester: Requester, id: string, input: StartTask, proof?: StartBinding) => {
+    const binding = proof ?? authorize(requester, id, input);
     if (!binding) throw new ApiFailure('CAPABILITY_UNAVAILABLE');
     if (binding.connectionId !== id || !eligible(binding, requester.id)) throw new ApiFailure('ACCESS_UNVERIFIED');
     if (!/^[1-9][0-9]*$/.test(input.workItemKey)) throw new ApiFailure('INVALID_REQUEST');
@@ -71,7 +73,7 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     return { taskId, state: 'queued' } as const;
   });
 
-  const claim = db.transaction((id: string) => {
+  const claim = db.transaction((id: string, proof?: StartBinding) => {
     const stored = load.get(id);
     if (stored?.state !== 'queued') return undefined;
     const { state: _state, observedState: _observedState, ...current } = stored;
@@ -79,7 +81,7 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
       db.prepare("UPDATE tasks SET state='failed',updated_at=? WHERE id=?").run(now(), id);
       return undefined;
     }
-    const binding = authorize({ id: current.requesterId }, current.connectionId, {
+    const binding = proof ?? authorize({ id: current.requesterId }, current.connectionId, {
       workItemKey: current.workItemKey, copilotAccountId: current.copilotAccountId, startRequestId: current.startRequestId,
     });
     if (binding?.connectionId !== current.connectionId || binding.repoId !== current.repoId ||
@@ -88,7 +90,7 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     return current;
   });
 
-  const confirm = db.transaction((verified: Claim, sessionId: string) => {
+  const confirm = db.transaction((verified: StartClaim, sessionId: string) => {
     const stored = matching(verified);
     if (!stored || !eligible(verified, verified.requesterId)) return false;
     const observed = stored.observedState;
@@ -105,7 +107,7 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     }
     return applied;
   });
-  const fail = db.transaction((verified: Claim) => {
+  const fail = db.transaction((verified: StartClaim) => {
     const stored = matching(verified);
     if (!stored) return false;
     const observed = stored.observedState;
@@ -119,11 +121,28 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     claim: claim.immediate,
     confirm: confirm.immediate,
     fail: fail.immediate,
-    recovery(requester: Requester, taskId: string): Claim | undefined {
+    recovery(requester: Requester, taskId: string): StartClaim | undefined {
       const current = load.get(taskId);
       if (current?.state !== 'needs_recovery' || current.requesterId !== requester.id) return undefined;
       const { state: _state, observedState: _observedState, ...claim } = current;
       return claim;
+    },
+    next() {
+      const row = db.prepare<[], { id: string }>(`
+        SELECT t.id FROM tasks t JOIN task_starts s ON s.task_id=t.id WHERE t.state='queued' ORDER BY t.created_at,t.id LIMIT 1
+      `).get();
+      const current = row && load.get(row.id);
+      if (!current) return undefined;
+      const { state: _state, observedState: _observedState, ...claim } = current;
+      return claim;
+    },
+    requireAuthorization(candidate: StartClaim) {
+      return db.prepare(`UPDATE tasks SET state='needs_auth',updated_at=?
+        WHERE id=? AND state='queued' AND requested_session_id=?`).run(now(), candidate.taskId, candidate.requestedSessionId).changes === 1;
+    },
+    requireRecovery(claimed: StartClaim) {
+      return db.prepare(`UPDATE tasks SET state='needs_recovery',updated_at=?
+        WHERE id=? AND state='starting' AND requested_session_id=?`).run(now(), claimed.taskId, claimed.requestedSessionId).changes === 1;
     },
     recoverInterrupted() {
       return db.prepare(`UPDATE tasks SET state='needs_recovery',updated_at=?

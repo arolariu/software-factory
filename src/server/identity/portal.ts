@@ -14,12 +14,13 @@ import type { RepositoryAccess } from '../repositories/provider.js';
 import { createRepositoryService } from '../repositories/sync.js';
 import { createTaskReads } from '../persistence/task-reads.js';
 import { createCopilotCatalog, type CatalogInspection } from './copilot-catalog.js';
+import { createSupervisedLaunch, type LaunchRuntime } from '../tasks/supervised-launch.js';
 
 export interface IdentityFiles { configFile: string; keyFile: string }
 
 const workerIntervalMs = 500;
 
-export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: IdentityFiles, fetcher = fetch) {
+export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: IdentityFiles, fetcher = fetch, launchRuntime?: LaunchRuntime) {
   let setup: ReturnType<typeof parseIdentityConfig>;
   try {
     setup = parseIdentityConfig(JSON.parse(readFileSync(files.configFile, 'utf8')) as unknown);
@@ -34,11 +35,11 @@ export function openIdentityPortal(db: SQLite.Database, dataDir: string, files: 
     try { return openCredentialVault(join(dataDir, 'credentials.sqlite'), key); }
     finally { key.fill(0); }
   })();
-  return createConfiguredPortal(db, setup, vault, cursorKey, fetcher);
+  return createConfiguredPortal(db, setup, vault, cursorKey, fetcher, undefined, launchRuntime);
 }
 
 export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<typeof parseIdentityConfig>,
-  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch, inspectCopilot?: CatalogInspection) {
+  vault: CredentialVault, cursorKey: Buffer, fetcher = fetch, inspectCopilot?: CatalogInspection, launchRuntime?: LaunchRuntime) {
   const workerSignal = new AsyncLocalStorage<AbortSignal>();
   const request: typeof fetch = (input, options) => {
     const worker = workerSignal.getStore();
@@ -75,8 +76,10 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
   });
   const taskReads = createTaskReads(db, cursorKey, identity.readGrant);
   const catalog = inspectCopilot && createCopilotCatalog(identity.readCopilotToken, inspectCopilot);
+  const launcher = launchRuntime && createSupervisedLaunch(db, launchRuntime, identity.readGrant);
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
+  let launching: Promise<void> | undefined;
   const worker = new AbortController();
   const stop = () => {
     clearInterval(timer);
@@ -94,7 +97,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
       },
       tasks: {
         ...taskReads, unlinkedSessions: unavailable,
-        activity: unavailable, options: unavailable, start: disabled,
+        activity: unavailable, options: unavailable, start: launcher?.reserve ?? disabled,
       },
       operations: {
         read: repositories.read, sync: repositories.sync, input: disabled, archive: disabled, remove: disabled,
@@ -102,6 +105,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
           if (!('connectionId' in effect) || !identity.connections(requester).items.some(({ id }) => id === effect.connectionId)) {
             throw new ApiFailure('NOT_FOUND');
           }
+          if (effect.kind === 'start' && launcher) return;
           disabled();
         },
       },
@@ -111,7 +115,13 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
     portal, identity, transport,
     start() {
       repositories.recoverInterrupted();
+      launcher?.recoverInterrupted();
       timer = setInterval(() => {
+        if (launcher && !launching) {
+          launching = workerSignal.run(worker.signal, () => launcher.runNext(worker.signal))
+            .catch(() => { console.error('Supervised task worker failed.'); })
+            .finally(() => { launching = undefined; });
+        }
         if (running) return;
         running = workerSignal.run(worker.signal, () => repositories.runNextOperation(worker.signal))
           .then(() => undefined, () => { console.error('Repository Sync worker failed.'); })
@@ -121,7 +131,7 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
     stop,
     async close() {
       stop();
-      await running;
+      await Promise.all([running, launching]);
       cursorKey.fill(0);
       vault.close();
     },
