@@ -92,6 +92,16 @@ it('fails closed for an unverified eligible connection even if it has no tasks',
   } finally { db.close(); }
 });
 
+it('uses the reservation scope without disclosing another requester’s task ID', () => {
+  const { db, reads } = fixture();
+  try {
+    expect(reads.issueTask(requester, 'alice-r', '2')).toEqual({ taskId: 'queued', busy: true });
+    expect(reads.issueTask(requester, 'alice-r', '6')).toEqual({ taskId: null, busy: true });
+    expect(reads.issueTask(requester, 'alice-r', '3')).toEqual({ taskId: null, busy: false });
+    expect(() => reads.issueTask(requester, 'alice-h', '5')).toThrow('ACCESS_DENIED');
+  } finally { db.close(); }
+});
+
 it('projects only a GitHub Copilot link for the exact authorized SDK session', () => {
   const { db, reads } = fixture();
   try {

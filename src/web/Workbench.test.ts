@@ -263,6 +263,59 @@ it('does not request launch options for a disabled issue and does not submit aft
   expect(target.textContent).not.toContain('Task queued');
 });
 
+it('shows terminal task receipts and permits a fresh start only after reloading eligibility', async () => {
+  const requests: string[] = [];
+  browse('/', (url, init) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) return Response.json(issueDetail(true));
+    if (url.endsWith('/task-options')) return Response.json(launchOptions);
+    if (url === '/api/auth/csrf') return Response.json({ csrfToken: 'token' });
+    if (url === '/api/tasks/prior') return Response.json({ task: { taskId: 'prior', state: 'failed' } });
+    if (url.endsWith('/tasks') && init?.method === 'POST') {
+      requests.push((JSON.parse(String(init.body)) as { startRequestId: string }).startRequestId);
+      return Response.json({ taskId: 'prior', state: 'queued' }, { status: 202 });
+    }
+    return new Response(null, { status: 404 });
+  });
+  await press('Document startup');
+  await press('Start task');
+  await vi.waitFor(() => expect(target.textContent).toContain('Task failed'));
+  await press('Refresh launch options');
+  await press('Start task');
+  await vi.waitFor(() => expect(new Set(requests).size).toBe(2));
+});
+
+it.each(['running', 'reauthorize', 'not-found'] as const)('shows existing task state %s without offering another start', async (scenario) => {
+  const taskReads = vi.fn();
+  browse('/', (url) => {
+    if (url === '/api/connections') return Response.json({ items: [repo] });
+    if (url.endsWith('?state=open')) return Response.json(snapshot([issue]));
+    if (url.endsWith('/issues/42')) {
+      const current = issueDetail(false);
+      return Response.json({ ...current, issue: { ...current.issue, taskId: 'existing' } });
+    }
+    if (url === '/api/tasks/existing') {
+      taskReads();
+      if (scenario === 'not-found') return Response.json({ code: 'NOT_FOUND' }, { status: 404 });
+      if (scenario === 'reauthorize') return Response.json({ code: 'ACCESS_DENIED' }, { status: 403 });
+      return Response.json({ task: { taskId: 'existing', state: 'running' }, sessionUrl: 'https://github.com/copilot/tasks/session' });
+    }
+    return new Response(null, { status: 404 });
+  });
+  await press('Document startup');
+  await vi.waitFor(() => {
+    const text = scenario === 'running' ? 'Task running' : scenario === 'reauthorize'
+      ? 'Repository access was denied' : 'Task status could not be refreshed';
+    expect(target.textContent).toContain(text);
+  });
+  expect(taskReads).toHaveBeenCalledOnce();
+  expect(target.textContent).not.toContain('Start task');
+  if (scenario === 'running') {
+    await expect.element(page.getByRole('link', { name: 'View Copilot session' })).toHaveAttribute('href', 'https://github.com/copilot/tasks/session');
+  }
+});
+
 it('treats a malformed receipt as uncertain and disables retry when the server reports an active task', async () => {
   const starts = vi.fn()
     .mockReturnValueOnce(Response.json({ taskId: 'not/a/task', state: 'queued' }, { status: 202 }))

@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { createGitHubCloudAdmission, type CloudConnection } from './github-cloud-admission.js';
+import type { ApiDto } from '../../shared/api/schemas.js';
 
 const requester = { id: 'alice' };
 const approved = { repoId: '81', ownerId: '42' };
@@ -16,7 +17,7 @@ function fixture() {
   const resolveAccount = vi.fn((): typeof account | undefined => account);
   const verify = vi.fn(async () => ({ token: 'ghu_fixture', login: 'owner' }));
   const issue = vi.fn(async () => ({ key: '17', state: 'open' as 'open' | 'closed' }));
-  const models = vi.fn(async () => [
+  const models = vi.fn(async (): Promise<ApiDto<'copilotCatalog'>['models']> => [
     { id: 'm1', name: 'Approved model', policy: 'enabled', reasoning: ['low', 'high'], defaultReasoning: 'high' },
     { id: 'm2', name: 'Denied model', policy: 'disabled', reasoning: ['high'], defaultReasoning: 'high' },
   ]);
@@ -54,6 +55,8 @@ it('loads only enabled models on demand and validates the selected effort agains
     availability: { available: true }, items: [{ id: 'm1', name: 'Approved model', supportedEfforts: ['low', 'high'] }],
   });
   const configured = { ...input, overrides: { model: 'm1', reasoningEffort: 'high' } };
+  models.mockResolvedValueOnce(null);
+  await expect(adapter.authorize(requester, 'conn', configured)).rejects.toThrow('TEMPORARILY_UNAVAILABLE');
   expect(await adapter.authorize(requester, 'conn', configured)).toEqual(binding);
   await expect(adapter.authorize(requester, 'conn', { ...configured, overrides: { model: 'm2' } })).resolves.toBeUndefined();
   await expect(adapter.authorize(requester, 'conn', { ...configured, overrides: { model: 'm1', reasoningEffort: 'max' } }))

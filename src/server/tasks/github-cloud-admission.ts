@@ -76,9 +76,11 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
     if (!candidate || (claim && !sameBinding(candidate.binding, claim))) return undefined;
     const { connection, account } = candidate;
     if (overrides) {
+      if (!ports.models) return undefined;
       const models = await allowedModels(requester, account.id);
       signal?.throwIfAborted();
-      const model = models?.find((item) => item.id === overrides.model);
+      if (!models) throw new ApiFailure('TEMPORARILY_UNAVAILABLE');
+      const model = models.find((item) => item.id === overrides.model);
       if (!model || (overrides.reasoningEffort && !model.supportedEfforts.includes(overrides.reasoningEffort))) return undefined;
     }
     const [credential, issue] = await Promise.all([

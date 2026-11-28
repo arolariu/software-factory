@@ -42,7 +42,8 @@ export function createSupervisedLaunch(db: SQLite.Database, runtime: LaunchRunti
     const count = (delays.get(candidate.taskId)?.count ?? 0) + 1;
     if (count >= 3) return failUnclaimed(candidate);
     const retryAfter = reason instanceof ApiFailure && reason.code === 'RATE_LIMITED' ? reason.retryAfter : undefined;
-    delays.set(candidate.taskId, { count, due: now() + 1_000 * Math.max(count, Math.min(60, retryAfter ?? 0)) });
+    if (retryAfter !== undefined && retryAfter > 60) return failUnclaimed(candidate);
+    delays.set(candidate.taskId, { count, due: now() + 1_000 * Math.max(count, retryAfter ?? 0) });
   }
   const confirm = db.transaction((claim: StartClaim, receipt: Receipt, stillAuthorized?: () => boolean) => {
     if (!sessionId.test(receipt.sessionId) || startClaimKey(receipt.claim) !== startClaimKey(claim) ||

@@ -1,8 +1,9 @@
 import SQLite from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import { migrate } from './migrations.js';
-import { createTaskStarts } from './task-start.js';
+import { createTaskStarts, type StartClaim } from './task-start.js';
 import { createSupervisedLaunch } from '../tasks/supervised-launch.js';
+import { ApiFailure } from '../http/problems.js';
 
 const requester = { id: 'alice' };
 const input = { startRequestId: 'once', workItemKey: '7', copilotAccountId: 'copilot' };
@@ -267,6 +268,59 @@ it('replays a durable receipt without rechecking mutable upstream admission', as
   await expect(launcher.reserve(requester, binding.connectionId, input)).rejects.toThrow('ACCESS_DENIED');
 });
 
+it('honors provider backoff before retrying an unclaimed task', async () => {
+  const db = fixture();
+  let at = 0;
+  const authorize = vi.fn(async () => binding);
+  const launch = vi.fn(async (claim: Readonly<StartClaim>) => ({ claim, sessionId: 'session' }));
+  const launcher = createSupervisedLaunch(db, { authorize, launch }, () => 'valid', () => at);
+  await launcher.reserve(requester, binding.connectionId, input);
+  authorize.mockRejectedValueOnce(new ApiFailure('RATE_LIMITED', 5));
+  await launcher.runNext();
+  at = 4_999;
+  await launcher.runNext();
+  expect(authorize).toHaveBeenCalledTimes(2);
+  expect(launch).not.toHaveBeenCalled();
+  at = 5_000;
+  await launcher.runNext();
+  expect(launch).toHaveBeenCalledOnce();
+});
+
+it.each(['proof-denied', 'cache-unverified', 'shutdown-during-admission', 'long-backoff'] as const)(
+  'does not dispatch when queued admission ends in %s', async (scenario) => {
+    const db = fixture();
+    const stop = new AbortController();
+    let access: 'valid' | 'unverified' = 'valid';
+    const authorize = vi.fn(async () => binding);
+    const launch = vi.fn();
+    const launcher = createSupervisedLaunch(db, { authorize, launch }, () => access);
+    const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+    if (scenario === 'proof-denied') authorize.mockRejectedValueOnce(new ApiFailure('COPILOT_REAUTH_REQUIRED'));
+    if (scenario === 'cache-unverified') access = 'unverified';
+    if (scenario === 'long-backoff') authorize.mockRejectedValueOnce(new ApiFailure('RATE_LIMITED', 120));
+    if (scenario === 'shutdown-during-admission') authorize.mockImplementationOnce(async () => { stop.abort(); return binding; });
+    await launcher.runNext(stop.signal);
+    expect(launch).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({
+      state: scenario === 'proof-denied' || scenario === 'long-backoff' ? 'failed' : 'queued',
+    });
+  },
+);
+
+it('releases legacy pre-dispatch holds on restart without starting them', async () => {
+  const db = fixture();
+  const launch = vi.fn();
+  const launcher = createSupervisedLaunch(db, { authorize: async () => binding, launch }, () => 'valid');
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  db.prepare("UPDATE tasks SET state='needs_auth' WHERE id=?").run(taskId);
+  launcher.recoverInterrupted();
+  await launcher.runNext();
+  expect(launch).not.toHaveBeenCalled();
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'failed' });
+  await expect(launcher.reserve(requester, binding.connectionId, { ...input, startRequestId: 'again' }))
+    .resolves.toMatchObject({ state: 'queued' });
+});
+
 it('keeps confirmed delivery when shutdown interrupts only usage sampling', async () => {
   const db = fixture();
   const stop = new AbortController();
@@ -281,6 +335,25 @@ it('keeps confirmed delivery when shutdown interrupts only usage sampling', asyn
   await launcher.runNext(stop.signal);
   expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
     .toEqual({ state: 'running', sdk_session_id: 'verified-remote' });
+});
+
+it.each([false, true])('rejects a rotated prepared proof at the durable boundary (dispatch already began: %s)', async (began) => {
+  const db = fixture();
+  let valid = began;
+  const dispatch = vi.fn(async (claim: Readonly<StartClaim>) => {
+    valid = false;
+    return { claim, sessionId: 'late' };
+  });
+  const launcher = createSupervisedLaunch(db, {
+    authorize: async () => binding,
+    prepare: async () => ({ binding, stillAuthorized: () => valid, dispatch }),
+    launch: vi.fn(),
+  }, () => 'valid');
+  const { taskId } = await launcher.reserve(requester, binding.connectionId, input);
+  await launcher.runNext();
+  expect(dispatch).toHaveBeenCalledTimes(began ? 1 : 0);
+  expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
+    .toEqual({ state: began ? 'needs_recovery' : 'failed', sdk_session_id: null });
 });
 
 it.each(['wrong-receipt', 'invalid-session-id', 'connection-changed', 'access-lost', 'runtime-error', 'interrupted'] as const)(
