@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { join } from 'node:path';
 import type SQLite from 'better-sqlite3';
+import type { ApiDto } from '../../shared/api/schemas.js';
 import type { PortalOptions, Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 import { openCredentialVault, type CredentialVault } from './credentials.js';
@@ -87,17 +88,36 @@ export function createConfiguredPortal(db: SQLite.Database, setup: ReturnType<ty
   };
   const unavailable = () => { throw new ApiFailure('TEMPORARILY_UNAVAILABLE'); };
   const disabled = () => { throw new ApiFailure('CAPABILITY_UNAVAILABLE'); };
+  function taskOptions(requester: Requester, id: string, query: ApiDto<'optionsQuery'>) {
+    const describe = launchRuntime?.describe;
+    if (!describe) return unavailable();
+    const connection = identity.repositoryContext(id, requester);
+    if (!connection) throw new ApiFailure('NOT_FOUND');
+    if (connection.provider !== 'github' || connection.target.host !== 'github.com') return disabled();
+    const access = identity.readGrant(id, requester);
+    if (access === 'denied') throw new ApiFailure('ACCESS_DENIED');
+    if (access !== 'valid') throw new ApiFailure('ACCESS_UNVERIFIED');
+    return describe(requester, id, query);
+  }
   const portal = {
     publicOrigin: setup.origin,
     modules: {
       identity: { ...identity, ...(catalog && { copilotCatalog: catalog }) },
       repositories: {
-        connections: identity.connections, issues: repositories.issues, issue: repositories.issue,
+        connections: identity.connections, issues: repositories.issues,
+        async issue(requester, id, key, query) {
+          const result = await repositories.issue(requester, id, key, query);
+          if (!launchRuntime?.describe || result.issue.state !== 'open') return result;
+          const connection = identity.repositoryContext(id, requester);
+          if (connection?.provider !== 'github' || connection.target.host !== 'github.com') return result;
+          const { launch } = taskOptions(requester, id, {});
+          return { ...result, issue: { ...result.issue, launch } };
+        },
         pullRequests: repositories.pullRequests, checks: repositories.checks, closeIssue: disabled,
       },
       tasks: {
         ...taskReads, unlinkedSessions: unavailable,
-        activity: unavailable, options: unavailable, start: launcher?.reserve ?? disabled,
+        activity: unavailable, options: taskOptions, start: launcher?.reserve ?? disabled,
       },
       operations: {
         read: repositories.read, sync: repositories.sync, input: disabled, archive: disabled, remove: disabled,

@@ -8,6 +8,7 @@ import { migrate } from '../persistence/migrations.js';
 import { openDatabase } from '../persistence/open.js';
 import { openIdentityPortal } from './portal.js';
 import type { StartClaim } from '../persistence/task-start.js';
+import type { ApiDto } from '../../shared/api/schemas.js';
 
 const origin = 'https://factory.example';
 
@@ -46,7 +47,13 @@ it.each([false, true])('signs in, connects and syncs through the app (supervised
     claim, sessionId: 'fixture-launch',
     usage: { aiCreditsStatus: 'complete', totalNanoAiu: 10 },
   }));
-  const auth = openIdentityPortal(data, root, { configFile, keyFile }, transport, enabled ? { authorize, launch } : undefined);
+  const unavailable = { available: false, reasonCode: 'CAPABILITY_UNAVAILABLE' } as const;
+  const taskOptions: ApiDto<'taskOptions'> = {
+    copilotAccountId: 'approved-account', launch: { available: true }, featureBranch: unavailable,
+    models: { availability: unavailable, items: [] },
+  };
+  const describe = vi.fn(() => taskOptions);
+  const auth = openIdentityPortal(data, root, { configFile, keyFile }, transport, enabled ? { authorize, launch, describe } : undefined);
   const server = await buildApp({
     db: data, staticRoot: root, build: { revision: null, builtAt: null, runUrl: null }, portal: auth.portal,
   });
@@ -76,6 +83,12 @@ it.each([false, true])('signs in, connects and syncs through the app (supervised
     const repo = (await server.inject({ url: '/api/connections', headers: { cookie } })).json().items[0];
     expect(repo.repositoryUrl).toBe('https://github.com/org/repo');
     const headers = { cookie, origin, 'x-csrf-token': signedCsrf };
+    const options = await server.inject({ url: `/api/connections/${repo.id}/task-options`, headers });
+    expect(options.statusCode).toBe(enabled ? 200 : 503);
+    if (enabled) expect(options.json()).toEqual(taskOptions);
+    expect((await server.inject({ url: '/api/connections/unknown/task-options', headers })).statusCode)
+      .toBe(enabled ? 404 : 503);
+    expect(describe).toHaveBeenCalledTimes(enabled ? 1 : 0);
     const stored = data.prepare<[string], { id: string; repo_id: string; user_id: string; identity_id: string }>(
       'SELECT id,repo_id,user_id,identity_id FROM repo_connections WHERE id=?',
     ).get(repo.id);
@@ -145,6 +158,13 @@ it.each([false, true])('signs in, connects and syncs through the app (supervised
     const cached = await server.inject({ url: `/api/connections/${repo.id}/issues?state=open`, headers });
     expect(cached.json()).toMatchObject({ freshness: 'current', items: [] });
     expect(transport).toHaveBeenCalledTimes(12);
+
+    transport.mockResolvedValueOnce(Response.json({
+      number: 42, state: 'open', title: 'Document startup', user: null, body: '', assignees: [],
+      created_at: '2026-11-26T22:00:00.000Z', updated_at: '2026-11-26T22:00:00.000Z',
+    })).mockResolvedValueOnce(Response.json([]));
+    const issueResponse = await server.inject({ url: `/api/connections/${repo.id}/issues/42`, headers });
+    expect(issueResponse.json()).toMatchObject({ issue: { launch: { available: enabled } } });
 
     transport.mockResolvedValueOnce(new Response('', { status: 502 }));
     const outage = await server.inject({ method: 'POST', url: `/api/connections/${repo.id}/sync`, headers });

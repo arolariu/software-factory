@@ -1,5 +1,5 @@
 import type SQLite from 'better-sqlite3';
-import type { StartTask } from '../../shared/api/schemas.js';
+import type { ApiDto, StartTask } from '../../shared/api/schemas.js';
 import { opaqueIdSegment } from '../../shared/api/opaque-id.js';
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
@@ -9,6 +9,7 @@ import { createTaskUsage } from '../persistence/task-usage.js';
 type UsageAccess = Parameters<typeof createTaskUsage>[1];
 type Receipt = { claim: Readonly<StartClaim>; sessionId: string; usage?: unknown };
 export interface LaunchRuntime {
+  describe?(requester: Requester, connectionId: string, query: ApiDto<'optionsQuery'>): ApiDto<'taskOptions'>;
   authorize(requester: Requester, connectionId: string, input: StartTask, signal?: AbortSignal): Promise<StartBinding | undefined>;
   launch(claim: Readonly<StartClaim>, signal?: AbortSignal): Promise<Receipt>;
 }

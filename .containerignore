@@ -115,6 +115,7 @@ src/web/**
 !src/web/AppShell.svelte
 !src/web/portal.css
 !src/web/Workbench.svelte
+!src/web/IssueTaskLaunch.svelte
 !src/web/Workbench.test.ts
 !src/web/portal-read.ts
 !src/web/ActiveSessions.svelte
