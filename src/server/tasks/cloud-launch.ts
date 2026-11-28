@@ -2,10 +2,12 @@ import { addAbortListener } from 'node:events';
 import { createSdk, withCopilotRuntime } from '../identity/copilot-runtime.js';
 import { ApiFailure } from '../http/problems.js';
 import { readCopilotUsage } from '../persistence/task-usage.js';
+import { verifiedCloudSessionUrl } from './cloud-session-link.js';
 
 export type CloudEvent = {
   type: string; agentId?: string; data?: {
     producer?: string; clientTurnId?: string; turnId?: string; interactionId?: string; parentToolCallId?: string;
+    infoType?: string; url?: string;
   };
 };
 type CloudRequest = {
@@ -68,9 +70,13 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
     const finished = Promise.withResolvers<void>();
     let interaction: string | undefined;
     let rootTurn: string | undefined;
+    let sessionUrl: string | undefined;
     let sending = false;
     const observe = ({ type, data, agentId }: CloudEvent) => {
       if (type === 'session.start' && data?.producer === 'copilot-agent') ready.resolve();
+      if (type === 'session.info' && data?.infoType === 'remote' && !agentId) {
+        sessionUrl ??= verifiedCloudSessionUrl(session.sessionId, data.url);
+      }
       if (!sending || !data || agentId || data.parentToolCallId) return;
       if (type === 'user.message' && data.clientTurnId === request.turnId) {
         interaction ??= data.interactionId;
@@ -84,7 +90,7 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
     unsubscribe = session.on(observe);
     // A worker can start before createSession returns. Prefer the cached event when present.
     void session.getEvents().then((history) => history.forEach((event) => {
-      if (event.type === 'session.start') observe(event);
+      if (event.type === 'session.start' || event.type === 'session.info') observe(event);
     })).catch(() => undefined);
     await Promise.race([ready.promise, cancel.promise]);
     signal.throwIfAborted();
@@ -93,7 +99,7 @@ async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample
     await Promise.race([consumed.promise, cancel.promise]);
     signal.throwIfAborted();
     const usage = sample ? await sampleCloudUsage(() => session.rpc.usage.getMetrics(), finished.promise, signal) : null;
-    return { sessionId: session.sessionId, usage };
+    return { sessionId: session.sessionId, usage, ...(sessionUrl && { sessionUrl }) };
   } finally {
     cancellation[Symbol.dispose]();
     unsubscribe?.();

@@ -67,7 +67,7 @@ bash scripts/check-copilot-cloud.sh https://github.com/OWNER/REPOSITORY REPOSITO
 
 Use the canonical repository spelling and the immutable numeric GitHub IDs. The terminal asks you to confirm the repository and then approve a fresh device code. The trial verifies the repository ID, its owner, the App installation, and the SDK login before requesting one billable cloud session with a fixed README-summary prompt. It does not ask the agent to make or publish changes and does not auto-approve permission requests. On ambiguous delivery, inspect the printed session ID in GitHub before retrying.
 
-A successful receipt proves the readiness and consumed-turn handshake for that run. If the matching main-agent turn ends within the observation window, the trial also checks that session's usage RPC. `usage: null` means no verified sample was obtained, not zero usage or failed delivery. An observed sample reports nano-AI units and premium request cost separately. This trial does not prove remote stop, publication, or production enablement.
+A successful receipt proves the readiness and consumed-turn handshake for that run. If the SDK reports the matching GitHub Copilot URL, the receipt includes it so you can inspect the run. If the matching main-agent turn ends within the observation window, the trial also checks that session's usage RPC. `usage: null` means no verified sample was obtained, not zero usage or failed delivery. An observed sample reports nano-AI units and premium request cost separately. This trial does not prove remote stop, publication, or production enablement.
 
 ### Verify the portal on the same disposable repository
 
@@ -87,7 +87,7 @@ https://factory-trial.localhost:3444 {
 }
 ```
 
-Pair at `/setup`, sign in, connect the approved repository, link Copilot, and select it as the default in Settings. Sync the repository and use **Start task** on an open disposable issue. The adapter checks both stored grants and the immutable repository ID, and only requests an issue review. Each start can consume Copilot quota. Ctrl+C drains Factory and removes its temporary database; it does not stop upstream sessions. This command never reads the existing preview database, and normal hosted and desktop startup leave the launcher disabled.
+Pair at `/setup`, sign in, connect the approved repository, link Copilot, and select it as the default in Settings. Sync the repository and use **Start task** on an open disposable issue. The adapter checks both stored grants and the immutable repository ID, and only requests an issue review. Each start can consume Copilot quota. Active Sessions shows **Open in GitHub Copilot** for an authorized task only if its runtime link is verified. Ctrl+C drains Factory and removes its temporary database; it does not stop upstream sessions. This command never reads the existing preview database, and normal hosted and desktop startup leave the launcher disabled.
 
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 

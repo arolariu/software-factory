@@ -110,6 +110,8 @@ it('reads exact session usage only after the delivered main-agent turn ends', as
   const pending = probeCloudTask(client, request);
   await vi.waitFor(() => expect(listeners.size).toBe(1));
   emit({ type: 'session.start', data: { producer: 'copilot-agent' } });
+  emit({ type: 'session.info', data: { infoType: 'remote', url: 'https://github.com/copilot/tasks/provided-session' } });
+  emit({ type: 'session.info', data: { infoType: 'remote', url: 'https://github.com/copilot/tasks/different' } });
   await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
   emit({ type: 'user.message', data: { clientTurnId: request.turnId, interactionId: 'interaction' } });
   emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
@@ -124,11 +126,31 @@ it('reads exact session usage only after the delivered main-agent turn ends', as
   await Promise.resolve();
   expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
   emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
-  expect(await pending).toEqual({ sessionId: session.sessionId, usage: { nanoAiu: 0, premiumRequests: 0.25 } });
+  expect(await pending).toEqual({
+    sessionId: session.sessionId, usage: { nanoAiu: 0, premiumRequests: 0.25 },
+    sessionUrl: 'https://github.com/copilot/tasks/provided-session',
+  });
   expect(session.rpc.usage.getMetrics).toHaveBeenCalledOnce();
   expect(listeners.size).toBe(0);
 });
 
+it('does not trust links with a different origin, identifier, or event source', async () => {
+  const { client, emit, session } = fixture();
+  session.getEvents.mockResolvedValueOnce([
+    { type: 'session.start', data: { producer: 'copilot-agent' } },
+    { type: 'session.info', data: { infoType: 'remote', url: 'https://github.com.evil.example/copilot/tasks/provided-session' } },
+    { type: 'session.info', data: { infoType: 'remote', url: 'https://github.com/copilot/tasks/provided-session?tracking=1' } },
+    { type: 'session.info', data: { infoType: 'other', url: 'https://github.com/copilot/tasks/provided-session' } },
+    { type: 'session.info', agentId: 'sub', data: { infoType: 'remote', url: 'https://github.com/copilot/tasks/provided-session' } },
+  ]);
+  session.send.mockImplementationOnce(async ({ clientTurnId }) => {
+    emit({ type: 'user.message', data: { clientTurnId, interactionId: 'interaction' } });
+    emit({ type: 'assistant.turn_start', data: { interactionId: 'interaction', turnId: 'main' } });
+    emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
+    return 'message-id';
+  });
+  expect((await probeCloudTask(client, request)).sessionUrl).toBeUndefined();
+});
 it.each([
   [new Error('private usage failure'), null],
   [{ aiCreditsStatus: 'partial', totalNanoAiu: 500, totalPremiumRequestCost: 0 }, { nanoAiu: null, premiumRequests: 0 }],

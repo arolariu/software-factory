@@ -7,7 +7,7 @@ import { createTaskStarts, type StartBinding, type StartClaim } from '../persist
 import { createTaskUsage } from '../persistence/task-usage.js';
 
 type UsageAccess = Parameters<typeof createTaskUsage>[1];
-type Receipt = { claim: Readonly<StartClaim>; sessionId: string; usage?: unknown };
+type Receipt = { claim: Readonly<StartClaim>; sessionId: string; sessionUrl?: string; usage?: unknown };
 export interface LaunchRuntime {
   describe?(requester: Requester, connectionId: string, query: ApiDto<'optionsQuery'>): ApiDto<'taskOptions'>;
   authorize(requester: Requester, connectionId: string, input: StartTask, signal?: AbortSignal): Promise<StartBinding | undefined>;
@@ -26,7 +26,8 @@ export function createSupervisedLaunch(db: SQLite.Database, runtime: LaunchRunti
   let running: Promise<void> | undefined;
   const confirm = db.transaction((claim: StartClaim, receipt: Receipt) => {
     if (!sessionId.test(receipt.sessionId) || !keys.every((key) => receipt.claim[key] === claim[key]) ||
-      readAccess(claim.connectionId, { id: claim.requesterId }) !== 'valid' || !starts.confirm(claim, receipt.sessionId)) return false;
+      readAccess(claim.connectionId, { id: claim.requesterId }) !== 'valid' ||
+      !starts.confirm(claim, receipt.sessionId, receipt.sessionUrl)) return false;
     if (receipt.usage !== undefined) {
       const target = usage.target({ id: claim.requesterId }, claim.taskId);
       if (target) usage.record(target, receipt.usage, now());

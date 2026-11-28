@@ -67,9 +67,10 @@ it('confirms only the exact claimed start; recovery never retries ambiguous work
   expect(restarted.claim(taskId)).toBeUndefined();
   expect(restarted.recovery(requester, taskId)).toEqual(claim);
   expect(restarted.recovery({ id: 'bob' }, taskId)).toBeUndefined();
-  expect(restarted.confirm(restarted.recovery(requester, taskId)!, 'actual')).toBe(true);
+  expect(restarted.confirm(restarted.recovery(requester, taskId)!, 'actual', 'https://github.com/copilot/tasks/different')).toBe(true);
   expect(restarted.confirm(claim, 'duplicate')).toBe(false);
-  expect(db.prepare('SELECT state, sdk_session_id FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'running', sdk_session_id: 'actual' });
+  expect(db.prepare('SELECT state, sdk_session_id, session_url FROM tasks WHERE id=?').get(taskId))
+    .toEqual({ state: 'running', sdk_session_id: 'actual', session_url: null });
   expect(db.prepare('SELECT session_state FROM task_observations WHERE task_id=?').get(taskId)).toEqual({ session_state: 'running' });
 });
 
@@ -120,6 +121,7 @@ it('runs a durable request once and accepts only its exact receipt and measured 
       expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(claim.taskId)).toEqual({ state: 'starting' });
       return {
         claim, sessionId: 'remote-1',
+        sessionUrl: 'https://github.com/copilot/tasks/remote-1',
         usage: { aiCreditsStatus: 'complete', totalNanoAiu: 750, totalPremiumRequestCost: 0.5 },
       };
     },
@@ -131,8 +133,8 @@ it('runs a durable request once and accepts only its exact receipt and measured 
   expect(await launcher.reserve(requester, binding.connectionId, input)).toMatchObject({ taskId });
   await launcher.runNext();
   expect(calls).toBe(1);
-  expect(db.prepare('SELECT state,sdk_session_id FROM tasks WHERE id=?').get(taskId))
-    .toEqual({ state: 'running', sdk_session_id: 'remote-1' });
+  expect(db.prepare('SELECT state,sdk_session_id,session_url FROM tasks WHERE id=?').get(taskId))
+    .toEqual({ state: 'running', sdk_session_id: 'remote-1', session_url: 'https://github.com/copilot/tasks/remote-1' });
   expect(db.prepare('SELECT nano_aiu,premium_requests FROM task_sdk_usage WHERE task_id=?').get(taskId))
     .toEqual({ nano_aiu: 750, premium_requests: 0.5 });
 });

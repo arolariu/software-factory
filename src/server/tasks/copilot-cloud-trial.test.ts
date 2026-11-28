@@ -14,8 +14,11 @@ function fixture() {
   });
   const confirm = vi.fn(async () => 'owner/disposable');
   const dispatch = vi.fn(async (_token: string, request: { requestedSessionId: string }): Promise<{
-    sessionId: string; usage: { nanoAiu: number | null; premiumRequests: number | null } | null;
-  }> => ({ sessionId: request.requestedSessionId, usage: { nanoAiu: 750, premiumRequests: 0.25 } }));
+    sessionId: string; sessionUrl?: string; usage: { nanoAiu: number | null; premiumRequests: number | null } | null;
+  }> => ({
+    sessionId: request.requestedSessionId, sessionUrl: `https://github.com/copilot/tasks/${request.requestedSessionId}`,
+    usage: { nanoAiu: 750, premiumRequests: 0.25 },
+  }));
   return { fetcher, report, show, authorize, confirm, dispatch };
 }
 
@@ -79,6 +82,7 @@ it('dispatches once with the approved account and exact repository and reports o
   const output = f.show.mock.calls.flat().join('\n');
   expect(output).toContain('"state":"delivery_confirmed"');
   expect(output).toContain('"usage":{"nanoAiu":750,"premiumRequests":0.25}');
+  expect(output).toContain('"sessionUrl":"https://github.com/copilot/tasks/');
   expect(output).not.toContain('ghu_trial');
   expect(output).not.toContain('README.md');
 });

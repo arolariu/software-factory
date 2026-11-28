@@ -54,6 +54,7 @@ it('shows scoped attention and keeps last-good sessions only for transient failu
   browse('/active-sessions?repository=r1', (url) => {
     if (url === '/api/tasks/a') return Response.json({
       task: { state: 'waiting_input' }, pendingQuestion: { text: 'Which approach?' },
+      sessionUrl: 'https://github.com/copilot/tasks/session-fixture',
       sdkUsage: { observedAt: '2026-11-28T00:00:00.000Z', nanoAiu: 0, premiumRequests: 1.25 },
     });
     if (calls++ === 0) return Response.json({
@@ -77,6 +78,8 @@ it('shows scoped attention and keeps last-good sessions only for transient failu
     expect(target.textContent).toContain('0 nano-AI units');
     expect(target.textContent).toContain('1.25 premium requests');
   });
+  const handoff = page.getByRole('link', { name: 'Open in GitHub Copilot' });
+  await expect.element(handoff).toHaveAttribute('href', 'https://github.com/copilot/tasks/session-fixture');
   await press('View task');
   expect(target.textContent).not.toContain('Which approach?');
   await page.getByLabelText('Status').selectOptions('needs_recovery', { timeout: 1500 });

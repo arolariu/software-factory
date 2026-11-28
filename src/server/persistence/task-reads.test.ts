@@ -92,6 +92,31 @@ it('fails closed for an unverified eligible connection even if it has no tasks',
   } finally { db.close(); }
 });
 
+it('projects only a GitHub Copilot link for the exact authorized SDK session', () => {
+  const { db, reads } = fixture();
+  try {
+    db.exec("INSERT INTO task_starts VALUES ('ask','hash',1,'account')");
+    const change = db.prepare("UPDATE tasks SET session_url=? WHERE id='ask'");
+    const valid = 'https://github.com/copilot/tasks/s1';
+    change.run(valid);
+    expect(reads.task(requester, 'ask').sessionUrl).toBe(valid);
+    expect(Value.Check(ApiSchemas.task, reads.task(requester, 'ask'))).toBe(true);
+    change.run('https://github.com/copilot/tasks/s3');
+    expect(reads.task(requester, 'ask').sessionUrl).toBeUndefined();
+    change.run('https://other.example/copilot/tasks/s1');
+    expect(reads.task(requester, 'ask').sessionUrl).toBeUndefined();
+    change.run(valid);
+    db.exec("UPDATE tasks SET runtime_kind='ado_worktree' WHERE id='ask'");
+    expect(reads.task(requester, 'ask').sessionUrl).toBeUndefined();
+    db.exec("UPDATE tasks SET runtime_kind='github_cloud',sdk_session_id='invalid/id' WHERE id='ask'");
+    change.run('https://github.com/copilot/tasks/invalid%2Fid');
+    expect(reads.task(requester, 'ask').sessionUrl).toBeUndefined();
+    db.exec("UPDATE tasks SET sdk_session_id='s1' WHERE id='ask'; UPDATE repo_connections SET generation=2 WHERE id='alice-r'");
+    change.run(valid);
+    expect(reads.task(requester, 'ask').sessionUrl).toBeUndefined();
+  } finally { db.close(); }
+});
+
 it('uses terminal timestamps and preserves unknown usage instead of counting it as zero', () => {
   const { db, reads } = fixture();
   try {

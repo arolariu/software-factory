@@ -66,11 +66,11 @@ export async function runCloudTrial(input: TrialInput, io: TrialIO): Promise<num
   const requestedSessionId = randomUUID();
   show(`Requesting one cloud session: ${requestedSessionId}`);
   try {
-    const { sessionId, usage } = await dispatch(token, {
+    const { sessionId, usage, sessionUrl } = await dispatch(token, {
       requestedSessionId, repository: destination, expectedLogin: destination.owner, turnId: randomUUID(), prompt: trialPrompt,
     });
     if (sessionId !== requestedSessionId) throw new Error('Session mismatch');
-    show(JSON.stringify({ state: 'delivery_confirmed', repository, repositoryId, userId, sessionId, usage }));
+    show(JSON.stringify({ state: 'delivery_confirmed', repository, repositoryId, userId, sessionId, sessionUrl, usage }));
     return 0;
   } catch {
     report('Cloud delivery could not be confirmed. Do not retry until you check the reported session ID in GitHub Copilot.');

@@ -112,6 +112,9 @@
                   {#if detail}
                     <p>{`Task state: ${detail.task.state}`}</p>
                     {#if detail.pendingQuestion}<p>{detail.pendingQuestion.text}</p>{/if}
+                    {#if detail.sessionUrl}
+                      <p><a href={detail.sessionUrl} target="_blank" rel="noreferrer">Open in GitHub Copilot</a></p>
+                    {/if}
                     {#if detail.sdkUsage}
                       <p>
                         Last usage sample:

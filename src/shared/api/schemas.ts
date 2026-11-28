@@ -163,6 +163,7 @@ export const ApiSchemas = {
   unlinkedSessions: availablePage(object({ id, runtimeKind: runtime, title: nullable(text), url: nullable(url) })),
   task: object({
     task, sessionState: nullable(sessionState), observedAt: nullable(at),
+    sessionUrl: Type.Optional(url),
     sdkUsage: Type.Optional(object({ observedAt: at, nanoAiu: nullable(count), premiumRequests: nullable(credits) })),
     pendingQuestion: nullable(object({ id, text })),
     actions: object({ context: availability, answer: availability, archive: availability }),

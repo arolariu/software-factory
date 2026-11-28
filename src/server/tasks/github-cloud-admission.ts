@@ -92,6 +92,7 @@ export function createGitHubCloudAdmission(approved: TrialTarget, ports: Admissi
       const { usage } = result;
       return {
         claim, sessionId: result.sessionId,
+        ...(result.sessionUrl && { sessionUrl: result.sessionUrl }),
         ...(usage && { usage: {
           ...(usage.nanoAiu === null ? {} : { aiCreditsStatus: 'complete', totalNanoAiu: usage.nanoAiu }),
           ...(usage.premiumRequests === null ? {} : { totalPremiumRequestCost: usage.premiumRequests }),

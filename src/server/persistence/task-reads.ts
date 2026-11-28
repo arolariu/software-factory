@@ -4,6 +4,7 @@ import { sha256Hex } from '../digest.js';
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
 import { createCursorCodec } from '../repositories/cursors.js';
+import { verifiedCloudSessionUrl } from '../tasks/cloud-session-link.js';
 
 type Summary = ApiDto<'activeSessions'>;
 type Task = ApiDto<'task'>;
@@ -84,12 +85,16 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       AND (o.session_state IS NULL OR o.session_state NOT IN ('completed','stopped','failed'))
     ORDER BY t.created_at DESC,t.id ASC`);
   const byId = db.prepare<[string, string], Row>(`${projection} WHERE t.requester_id=? AND t.id=?`);
-  const usageForTask = db.prepare<[string], { observed_at: number; nano_aiu: number | null; premium_requests: number | null }>(`
-    SELECT u.observed_at,u.nano_aiu,u.premium_requests FROM task_sdk_usage u
-    JOIN tasks t ON t.id=u.task_id JOIN repo_connections c ON c.id=t.connection_id JOIN task_starts s ON s.task_id=t.id
-    WHERE u.task_id=? AND u.session_id=t.sdk_session_id AND u.runtime_scope=t.runtime_scope
+  const cloudForTask = db.prepare<[string], {
+    session_url: string | null; observed_at: number | null; nano_aiu: number | null; premium_requests: number | null;
+  }>(`
+    SELECT t.session_url,u.observed_at,u.nano_aiu,u.premium_requests
+    FROM tasks t JOIN repo_connections c ON c.id=t.connection_id JOIN task_starts s ON s.task_id=t.id
+    JOIN repositories r ON r.id=c.repo_id
+    LEFT JOIN task_sdk_usage u ON u.task_id=t.id AND u.session_id=t.sdk_session_id AND u.runtime_scope=t.runtime_scope
       AND u.copilot_account_id=s.copilot_account_id AND u.connection_generation=s.connection_generation
-      AND u.connection_generation=c.generation
+    WHERE t.id=? AND t.runtime_kind='github_cloud' AND c.generation=s.connection_generation
+      AND r.provider='github' AND r.canonical_host='github.com'
   `);
   const byConnection = db.prepare<[string, string], Row>(`
     ${projection} WHERE t.requester_id=? AND t.connection_id=? AND t.state NOT IN ('completed','stopped','failed')
@@ -142,7 +147,8 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       requireConnection(requester, row.connection_id);
       const observed = currentObservation(row, now());
       const nonterminal = active(row.state) && (row.session_state === null || active(row.session_state));
-      const sample = usageForTask.get(row.id);
+      const sample = cloudForTask.get(row.id);
+      const sessionUrl = verifiedCloudSessionUrl(row.sdk_session_id, sample?.session_url);
       return {
         task: taskView(row),
         sessionState: row.sdk_session_id === null || !nonterminal ? null : observed ?? 'unverified',
@@ -151,7 +157,8 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
           ? { id: row.question_id, text: row.question_text } : null,
         actions: { answer: disabled, archive: disabled, context: disabled },
         draftPrUrl: row.draft_pr_url,
-        ...(sample && { sdkUsage: {
+        ...(sessionUrl && { sessionUrl }),
+        ...(sample?.observed_at != null && { sdkUsage: {
           observedAt: new Date(sample.observed_at).toISOString(),
           nanoAiu: sample.nano_aiu, premiumRequests: sample.premium_requests,
         } }),

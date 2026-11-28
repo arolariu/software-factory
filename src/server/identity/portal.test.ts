@@ -57,7 +57,8 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     });
   });
   const probe = vi.fn(async (_token: string, request: { requestedSessionId: string }) => ({
-    sessionId: request.requestedSessionId, usage: { nanoAiu: 0, premiumRequests: 0.125 },
+    sessionId: request.requestedSessionId, sessionUrl: `https://github.com/copilot/tasks/${request.requestedSessionId}`,
+    usage: { nanoAiu: 0, premiumRequests: 0.125 },
   }));
   const auth = createConfiguredPortal(data, { origin, registry }, openCredentialVault(join(root, 'credentials.sqlite'), randomBytes(32)),
     randomBytes(32), transport, undefined, { approvedTarget: { repoId, ownerId }, probe });
@@ -104,6 +105,7 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     await vi.waitFor(async () => {
       expect((await server.inject({ url: location, headers })).json()).toMatchObject({
         task: { state: 'running' }, sdkUsage: { nanoAiu: 0, premiumRequests: 0.125 },
+        sessionUrl: expect.stringMatching(/^https:\/\/github\.com\/copilot\/tasks\/[a-f0-9-]+$/),
       });
     }, { timeout: 3000 });
     expect(probe).toHaveBeenCalledOnce();

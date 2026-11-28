@@ -4,6 +4,7 @@ import type { StartTask } from '../../shared/api/schemas.js';
 import { sha256Hex } from '../digest.js';
 import type { Requester } from '../http/portal-modules.js';
 import { ApiFailure } from '../http/problems.js';
+import { verifiedCloudSessionUrl } from '../tasks/cloud-session-link.js';
 
 export type StartBinding = { connectionId: string; repoId: string; identityId: string; generation: number; scope: string };
 type Gate = (requester: Requester, connectionId: string, input: StartTask) => StartBinding | undefined;
@@ -90,17 +91,18 @@ export function createTaskStarts(db: SQLite.Database, authorize: Gate = () => un
     return current;
   });
 
-  const confirm = db.transaction((verified: StartClaim, sessionId: string) => {
+  const confirm = db.transaction((verified: StartClaim, sessionId: string, sessionUrl?: string) => {
     const stored = matching(verified);
     if (!stored || !eligible(verified, verified.requesterId)) return false;
     const observed = stored.observedState;
     const terminal = observed === 'completed' || observed === 'stopped' || observed === 'failed';
     const at = now();
-    const applied = db.prepare(`UPDATE tasks SET sdk_session_id=?,state=?,updated_at=?
+    const applied = db.prepare(`UPDATE tasks SET sdk_session_id=?,session_url=?,state=?,updated_at=?
         WHERE id=? AND runtime_kind='github_cloud' AND sdk_session_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM tasks other WHERE other.runtime_kind=tasks.runtime_kind
             AND other.runtime_scope=tasks.runtime_scope AND other.sdk_session_id=?)
-      `).run(sessionId, terminal ? observed : 'running', at, verified.taskId, sessionId).changes === 1;
+      `).run(sessionId, verifiedCloudSessionUrl(sessionId, sessionUrl) ?? null,
+      terminal ? observed : 'running', at, verified.taskId, sessionId).changes === 1;
     if (applied && !terminal) {
       db.prepare(`INSERT INTO task_observations(task_id,session_state,observed_at) VALUES (?,'running',?)
         ON CONFLICT(task_id) DO UPDATE SET session_state=excluded.session_state, observed_at=excluded.observed_at`).run(verified.taskId, at);
