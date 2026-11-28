@@ -69,7 +69,25 @@ Use the canonical repository spelling and the immutable numeric GitHub IDs. The 
 
 A successful receipt proves the readiness and consumed-turn handshake for that run. If the matching main-agent turn ends within the observation window, the trial also checks that session's usage RPC. `usage: null` means no verified sample was obtained, not zero usage or failed delivery. An observed sample reports nano-AI units and premium request cost separately. This trial does not prove remote stop, publication, or production enablement.
 
-The portal's staging adapter also binds issue intake to one explicitly approved personal repository by numeric ID. Select a default Copilot account in Settings to use it for new tasks. The adapter verifies both stored grants against the repository before dispatch and only requests a review of the open issue. This path is exercised with fixtures; normal hosted and desktop startup leave it disabled.
+### Verify the portal on the same disposable repository
+
+After confirming the CLI delivery trial, use the development build to start a fresh portal:
+
+```bash
+bash scripts/start-copilot-portal-trial.sh REPOSITORY_ID GITHUB_USER_ID
+```
+
+The command uses the public `FACTORY_GITHUB_CLIENT_ID`, asks for confirmation again, and prints an ephemeral loopback backend and setup code. Configure a separate local TLS reverse proxy for `https://factory-trial.localhost:3444` that listens only on `127.0.0.1`, preserves `Host`, and forwards to the printed backend. Use a certificate trusted by your browser. For example, with a trusted local Caddy CA:
+
+```caddyfile
+https://factory-trial.localhost:3444 {
+    bind 127.0.0.1
+    tls internal
+    reverse_proxy 127.0.0.1:BACKEND_PORT
+}
+```
+
+Pair at `/setup`, sign in, connect the approved repository, link Copilot, and select it as the default in Settings. Sync the repository and use **Start task** on an open disposable issue. The adapter checks both stored grants and the immutable repository ID, and only requests an issue review. Each start can consume Copilot quota. Ctrl+C drains Factory and removes its temporary database; it does not stop upstream sessions. This command never reads the existing preview database, and normal hosted and desktop startup leave the launcher disabled.
 
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 

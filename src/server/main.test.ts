@@ -118,6 +118,36 @@ it('rejects desktop startup with a fixed port, hosted identity, or no native key
   await expect(startServer({ ...options, desktop: { channelToken: 'too short' } })).rejects.toThrow('Desktop runtime');
 });
 
+it('does not start a cloud trial against an existing Factory data directory', async () => {
+  const db = openDatabase(join(dataDir, 'factory.sqlite'));
+  db.close();
+  await expect(startServer({
+    dataDir, artifactDir, port: 0, cloudTrial: { repoId: '63', ownerId: '42' },
+    management: {
+      publicOrigin: 'https://factory-trial.localhost:3444', githubClientId: 'app',
+      inspectCopilot: async () => ({ models: [], quota: [] }),
+    },
+  })).rejects.toThrow('empty data directory');
+});
+
+it('cannot combine loopback cloud trial startup with hosted, desktop or legacy modes', async () => {
+  const managed = {
+    publicOrigin: 'https://factory-trial.localhost:3444', githubClientId: 'app',
+    inspectCopilot: async () => ({ models: [], quota: [] }),
+  };
+  const options = { dataDir, artifactDir, port: 0, cloudTrial: { repoId: '63', ownerId: '42' }, management: managed };
+  await expect(startServer({ dataDir, artifactDir, port: 0, cloudTrial: options.cloudTrial }))
+    .rejects.toThrow('Cloud trial requires isolated loopback');
+  for (const override of [
+    { port: 3444 }, { container: true }, { desktop, management: { ...managed, publicOrigin: desktopOrigin, loadVaultKey: nativeKey } },
+    { identity: { configFile: 'config', keyFile: 'key' } }, { management: { publicOrigin: managed.publicOrigin } },
+    { management: { publicOrigin: managed.publicOrigin, githubClientId: 'app' } },
+    { management: { ...managed, publicOrigin: 'https://factory.example' } },
+  ]) {
+    await expect(startServer({ ...options, ...override })).rejects.toThrow('Cloud trial requires isolated loopback');
+  }
+});
+
 it('requires an exact /data mount and private permissions for container storage', () => {
   const mount = '67 12 0:51 /factory /data rw - ext4 /dev/example rw';
   expect(() => verifyContainerData('/data', 0o700, mount)).not.toThrow();

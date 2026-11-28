@@ -19,6 +19,7 @@ interface AdmissionPorts {
 
 const disabled = { available: false, reasonCode: 'CAPABILITY_UNAVAILABLE' } as const;
 const decimal = /^[1-9][0-9]{0,19}$/;
+export const cloudTrialOrigin = 'https://factory-trial.localhost:3444';
 
 export function createGitHubCloudAdmission(approved: TrialTarget, ports: AdmissionPorts) {
   const { repoId, ownerId } = approved;

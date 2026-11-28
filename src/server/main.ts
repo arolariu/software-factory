@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp, type BuildAppOptions, type BuildMetadata } from './build-app.js';
@@ -12,6 +12,7 @@ import { issueOperatorCode } from './management/operator.js';
 import { rebindManagedOwner } from './management/owner-rebind.js';
 import { createSetupStore } from './management/setup.js';
 import { inspectCatalogWithSdk } from './identity/copilot-catalog.js';
+import { cloudTrialOrigin, type TrialTarget } from './tasks/github-cloud-admission.js';
 
 interface StartupOptions {
   dataDir: string;
@@ -22,6 +23,7 @@ interface StartupOptions {
   identity?: IdentityFiles;
   management?: ManagementOptions;
   desktop?: { channelToken: string };
+  cloudTrial?: TrialTarget;
 }
 
 const supportedDataFilesystems = new Set(['ext4', 'xfs', 'btrfs', 'zfs']);
@@ -74,16 +76,24 @@ function parsePort(value: string): number {
 
 export async function startServer(options: StartupOptions) {
   const { port, artifactDir, logger = false } = options;
-  const { desktop } = options;
+  const { desktop, cloudTrial, management: managed } = options;
   if (desktop && (port !== 0 || options.container || options.identity ||
     options.management?.publicOrigin !== desktopOrigin || !options.management.loadVaultKey ||
     !channelPattern.test(desktop.channelToken))) {
     throw new Error('Desktop runtime requires ephemeral loopback, a native channel and a native vault key.');
   }
-  const allowRequest = desktop && desktopChannel(desktop.channelToken);
+  if (cloudTrial && (port !== 0 || desktop || options.container || options.identity ||
+    !managed?.githubClientId || !managed.inspectCopilot || managed.publicOrigin !== cloudTrialOrigin)) {
+    throw new Error('The Cloud trial requires isolated loopback and managed GitHub authorization.');
+  }
+  const expectedHost = cloudTrial && new URL(cloudTrialOrigin).host;
+  const allowRequest = desktop ? desktopChannel(desktop.channelToken)
+    : expectedHost ? ((request) => request.headers.host === expectedHost) satisfies NonNullable<BuildAppOptions['allowRequest']>
+      : undefined;
   const dataDir = resolve(options.dataDir);
   if (!Number.isInteger(port) || port < (options.container ? 1 : 0) || port > 65535) throw new Error(invalidPort);
   verifyDataDirectory(dataDir, options.container);
+  if (cloudTrial && readdirSync(dataDir).length !== 0) throw new Error('The Cloud trial requires an empty data directory.');
 
   const release = lockDataDirectory(dataDir);
   let db: ReturnType<typeof openDatabase> | undefined;
@@ -99,7 +109,7 @@ export async function startServer(options: StartupOptions) {
     if (!hasCurrentSchema(db)) throw new Error('The database is missing required schema objects.');
     if (options.management && options.identity) throw new Error('Configure either management mode or legacy identity, not both.');
     if (options.identity && createSetupStore(db).owner()) throw new Error('A claimed management instance cannot use legacy identity.');
-    if (options.management) management = openManagementRuntime(db, dataDir, options.management);
+    if (managed) management = openManagementRuntime(db, dataDir, managed, undefined, cloudTrial);
     if (options.identity) auth = openIdentityPortal(db, dataDir, options.identity);
     const portal = auth?.portal ?? management?.portal;
     const app = await buildApp({
@@ -108,7 +118,7 @@ export async function startServer(options: StartupOptions) {
       ...(management && { management }),
       ...(allowRequest && { allowRequest }),
     });
-    const address = await app.listen({ host: desktop ? '127.0.0.1' : '0.0.0.0', port });
+    const address = await app.listen({ host: desktop || cloudTrial ? '127.0.0.1' : '0.0.0.0', port });
     auth?.start();
     management?.start();
     const close = async () => {

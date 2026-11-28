@@ -11,6 +11,7 @@ import { createManagementSettings } from './settings.js';
 import { createSetupStore } from './setup.js';
 import { loadOrInitializeVaultKey } from './vault-key.js';
 import type { CatalogInspection } from '../identity/copilot-catalog.js';
+import type { TrialTarget } from '../tasks/github-cloud-admission.js';
 
 export class OwnerAppError extends Error {}
 export class ManagementVaultError extends Error {}
@@ -39,7 +40,8 @@ export interface ManagementOptions {
   inspectCopilot?: CatalogInspection;
 }
 
-export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch) {
+export function openManagementRuntime(db: SQLite.Database, dataDir: string, options: ManagementOptions, fetcher = fetch,
+  trialTarget?: TrialTarget) {
   const origin = managementOrigin(options.publicOrigin);
   const setup = assertManagementData(db);
   const vaultPath = join(dataDir, 'credentials.sqlite');
@@ -74,7 +76,8 @@ export function openManagementRuntime(db: SQLite.Database, dataDir: string, opti
     const fetchWhileOpen: typeof fetch = (input, options) => fetcher(input, {
       ...options, signal: AbortSignal.any([lifecycle.signal, ...(options?.signal ? [options.signal] : [])]),
     });
-    const configured = githubClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen, inspectCopilot) : undefined;
+    const configured = githubClientId ? createConfiguredPortal(db, { origin, registry }, vault, cursorKey, fetchWhileOpen, inspectCopilot,
+      trialTarget && { approvedTarget: trialTarget }) : undefined;
     const settings = githubClientId ? createManagementSettings(db, githubClientId, copilotEnabled) : undefined;
     const authorization = configured && settings ? createAuthorizationService({
       db, vault, setup, registry, identity: configured.identity, transport: configured.transport, device: createGitHubDeviceFlow(fetchWhileOpen),
