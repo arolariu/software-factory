@@ -59,7 +59,10 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
       return Response.json({
         id: remote, html_url: `https://github.com/copilot/tasks/${remote}`, state: 'completed',
         creator_type: 'user', creator: { id: upstreamTaskCreator }, owner: { id: 42 }, repository: { id: 91 },
-        sessions: [{ prompt: 'Private provider transcript' }],
+        sessions: [{
+          id: remote, task_id: remote, user: { id: 42 }, owner: { id: 42 }, repository: { id: 91 },
+          usage: { type: 'premium_requests', amount: 0.125 }, prompt: 'Private provider transcript',
+        }],
       });
     }
     expect(bearer).toBe('Bearer ghu_repository');
@@ -138,7 +141,7 @@ it('binds staged cloud dispatch to both real stored grants and the approved immu
     expect((await server.inject(statusPath)).statusCode).toBe(401);
     expect((await server.inject({ url: '/api/tasks/unrelated/cloud-status', headers })).statusCode).toBe(404);
     const checked = await server.inject({ url: statusPath, headers });
-    expect(checked.json()).toEqual({ state: 'completed' });
+    expect(checked.json()).toEqual({ state: 'completed', usage: { unit: 'premium_requests', amount: 0.125 } });
     expect(checked.headers['cache-control']).toBe('no-store');
     expect(statusReads).toHaveBeenCalledExactlyOnceWith(probe.mock.calls[0]?.[1].requestedSessionId);
     upstreamTaskCreator = 43;

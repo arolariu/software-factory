@@ -49,3 +49,33 @@ it('does not issue unverified or credential-fallback requests and does not infer
   fetcher.mockRejectedValueOnce(new Error('sensitive'));
   expect(await readCloudTaskStatus(target, 'ghu_fixture', fetcher)).toEqual(unavailable);
 });
+
+const linked = {
+  id: target.sessionId, task_id: target.sessionId, user: { id: 42 }, owner: { id: 42 }, repository: { id: 81 },
+  usage: { type: 'ai_credits', amount: 0 },
+};
+
+it.each([
+  ['ai_credits', 0], ['premium_requests', 1.25],
+] as const)('reports exact GitHub session usage in %s without importing transcripts or adding units', async (unit, amount) => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({
+    ...proof, sessions: [
+      { ...linked, id: 'other-session', usage: { type: 'ai_credits', amount: 700 } },
+      { ...linked, usage: { type: unit, amount }, prompt: 'Sensitive prompt' },
+    ],
+  }));
+  expect(await readCloudTaskStatus(target, 'ghu_fixture', fetcher)).toEqual({
+    state: 'waiting_for_user', usage: { unit, amount },
+  });
+});
+
+it.each([
+  { sessions: [{ ...linked, id: 'another' }] }, { sessions: [linked, { ...linked, usage: null }] },
+  { sessions: [{ ...linked, task_id: 'another' }] }, { sessions: [{ ...linked, user: { id: 43 } }] },
+  { sessions: [{ ...linked, owner: { id: 43 } }] }, { sessions: [{ ...linked, repository: { id: 82 } }] },
+  { sessions: [{ ...linked, usage: { type: 'unknown', amount: 0 } }] }, { sessions: [{ ...linked, usage: { type: 'ai_credits', amount: -1 } }] },
+  { sessions: null }, { sessions: [] },
+])('omits missing or ambiguous GitHub usage without discarding independently verified status (%j)', async ({ sessions }) => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ ...proof, sessions }));
+  expect(await readCloudTaskStatus(target, 'ghu_fixture', fetcher)).toEqual({ state: 'waiting_for_user' });
+});

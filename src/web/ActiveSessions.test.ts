@@ -52,7 +52,7 @@ it('does not present unavailable session data as an empty queue, and lets users 
 it('shows scoped attention and keeps last-good sessions only for transient failures', async () => {
   let calls = 0;
   const cloud = vi.fn()
-    .mockReturnValueOnce(Response.json({ state: 'completed' }))
+    .mockReturnValueOnce(Response.json({ state: 'completed', usage: { unit: 'ai_credits', amount: 0 } }))
     .mockReturnValueOnce(Response.json({ state: null }));
   browse('/active-sessions?repository=r1', (url) => {
     if (url === '/api/tasks/a/cloud-status') return cloud() as Response;
@@ -88,10 +88,13 @@ it('shows scoped attention and keeps last-good sessions only for transient failu
   expect(cloud).not.toHaveBeenCalled();
   await press('Check GitHub status');
   await vi.waitFor(() => expect(target.textContent).toContain('GitHub status: Completed'));
+  expect(target.textContent).toContain('GitHub-reported usage: 0 AI credits');
+  expect(target.textContent).toContain('1.25 premium requests');
   expect(target.textContent).toContain('Task state: waiting_input');
   await press('Check GitHub status');
   await vi.waitFor(() => expect(target.textContent).toContain('GitHub status unavailable'));
   expect(target.textContent).not.toContain('GitHub status: Completed');
+  expect(target.textContent).not.toContain('GitHub-reported usage');
   await press('View task');
   expect(target.textContent).not.toContain('Which approach?');
   await page.getByLabelText('Status').selectOptions('needs_recovery', { timeout: 1500 });

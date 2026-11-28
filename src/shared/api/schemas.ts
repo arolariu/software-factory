@@ -172,6 +172,7 @@ export const ApiSchemas = {
   }),
   cloudTaskStatus: object({
     state: nullable(names('queued', 'in_progress', 'completed', 'failed', 'idle', 'waiting_for_user', 'timed_out', 'cancelled')),
+    usage: Type.Optional(object({ unit: names('ai_credits', 'premium_requests'), amount: credits })),
   }),
   activity: availablePage(object({ id, at, kind: id, summary: text })),
   taskOptions: object({

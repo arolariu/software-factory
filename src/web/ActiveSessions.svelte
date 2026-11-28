@@ -16,6 +16,7 @@
     ['idle', 'Idle'], ['waiting_for_user', 'Waiting for you'], ['timed_out', 'Timed out'], ['cancelled', 'Cancelled'],
   ]);
   const cloudUnavailable = 'GitHub status unavailable.';
+  const usageLabels = new Map([['ai_credits', 'AI credits'], ['premium_requests', 'premium requests']]);
   const sections = [true, false] as const;
   const initial = new URLSearchParams(location.search);
   let repository = $state(initial.get('repository') ?? '');
@@ -24,6 +25,7 @@
   let taskId = $state('');
   let detailNote = $state('');
   let cloudNote = $state('');
+  let cloudUsage = $state<ApiDto<'cloudTaskStatus'>['usage']>();
   let checkingCloud = $state(false);
   const detailVersion = requestVersion();
   const report = readReport<'activeSessions'>('/api/active-sessions', 'Active Sessions are unavailable. Try again later.', closeTask);
@@ -37,6 +39,7 @@
   const isAttention = (session: Session) => attention.some((state) => state === session.state);
   function clearCloud() {
     cloudNote = '';
+    cloudUsage = undefined;
     checkingCloud = false;
   }
 
@@ -78,11 +81,13 @@
     const version = detailVersion.next();
     checkingCloud = true;
     cloudNote = 'Checking GitHub status...';
+    cloudUsage = undefined;
     try {
-      const { state } = await readPortal<ApiDto<'cloudTaskStatus'>>(`/api/tasks/${encodeURIComponent(id)}/cloud-status`, report.signal);
+      const { state, usage } = await readPortal<ApiDto<'cloudTaskStatus'>>(`/api/tasks/${encodeURIComponent(id)}/cloud-status`, report.signal);
       if (!detailVersion.current(version)) return;
       const label = cloudLabels.get(state ?? '');
       cloudNote = label ? `GitHub status: ${label}` : cloudUnavailable;
+      cloudUsage = usage;
     } catch (error) {
       if (!report.clearAccess(error) && detailVersion.current(version)) cloudNote = cloudUnavailable;
     } finally {
@@ -150,6 +155,9 @@
                       <div class="cloud-status">
                         <button type="button" disabled={checkingCloud} onclick={() => void checkCloudStatus(session.taskId)}>Check GitHub status</button>
                         <span class="muted" role="status">{cloudNote}</span>
+                        {#if cloudUsage}
+                          <span class="muted">{`GitHub-reported usage: ${cloudUsage.amount} ${usageLabels.get(cloudUsage.unit)}`}</span>
+                        {/if}
                       </div>
                     {/if}
                     {#if detail.sdkUsage}
