@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { runDesktopSidecar } from './desktop-sidecar.js';
+import { lockDataDirectory } from '../persistence/instance-lock.js';
+import { openDatabase } from '../persistence/open.js';
+import { migrate } from '../persistence/migrations.js';
+import { openCredentialVault } from '../identity/credentials.js';
 
 let root: string;
 let dataDir: string;
@@ -81,6 +85,31 @@ it('reports a sanitized startup reason over the private readiness pipe', async (
   control.write(Buffer.alloc(64, 5));
   await child;
   expect(String((await pending)[0])).toBe('error assets\n');
+});
+
+it.each(['locked', 'owner', 'vault', 'startup'] as const)('reports only an allowlisted %s readiness failure', async (code) => {
+  let release: (() => void) | undefined;
+  let path = dataDir;
+  if (code === 'locked') release = lockDataDirectory(dataDir);
+  else if (code === 'startup') path = join(root, 'missing-private-data');
+  else if (code === 'vault') openCredentialVault(join(dataDir, 'credentials.sqlite'), Buffer.alloc(32, 3)).close();
+  else {
+    const db = openDatabase(join(dataDir, 'factory.sqlite'));
+    try {
+      migrate(db);
+      db.exec("INSERT INTO management_owner VALUES(1,'github','github.com','42','not-this-app')");
+    } finally { db.close(); }
+  }
+  try {
+    const control = new PassThrough();
+    const readiness = new PassThrough();
+    const pending = once(readiness, 'data');
+    const child = expect(runDesktopSidecar(control, readiness, { dataDir: path, artifactDir, githubClientId: 'app' }))
+      .rejects.toThrow();
+    control.write(Buffer.alloc(64, 5));
+    await child;
+    expect(String((await pending)[0])).toBe(`error ${code}\n`);
+  } finally { release?.(); }
 });
 
 it('drains instead of accepting any commands sent on the lifetime pipe', async () => {
