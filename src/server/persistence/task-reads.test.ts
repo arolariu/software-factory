@@ -6,8 +6,9 @@ import { migrate } from './migrations.js';
 import { createTaskReads } from './task-reads.js';
 
 const requester = { id: 'alice' };
+const observationAt = 20;
 
-function fixture() {
+function fixture(now = () => observationAt) {
   const db = new SQLite(':memory:');
   db.pragma('foreign_keys=ON');
   migrate(db);
@@ -36,7 +37,7 @@ function fixture() {
   const grants = new Map<string, 'valid' | 'denied' | 'unverified'>([
     ['alice-r', 'valid'], ['alice-h', 'denied'],
   ]);
-  return { db, grants, reads: createTaskReads(db, new Uint8Array(32), (connectionId) => grants.get(connectionId) ?? 'denied') };
+  return { db, grants, reads: createTaskReads(db, new Uint8Array(32), (connectionId) => grants.get(connectionId) ?? 'denied', now) };
 }
 
 it('projects only owned, authorized, mapped nonterminal sessions and separates observed state', () => {
@@ -45,7 +46,7 @@ it('projects only owned, authorized, mapped nonterminal sessions and separates o
     const summary = reads.activeSessions(requester);
     expect(Value.Check(ApiSchemas.activeSessions, summary)).toBe(true);
     expect(summary.repositories).toEqual([{ id: 'r', name: 'Published', provider: 'github' }]);
-    expect(summary.sessions.map(({ taskId, state }) => [taskId, state])).toEqual([['ask', 'waiting_input'], ['unknown', 'unverified']]);
+    expect(summary.sessions.map(({ taskId, state }) => [taskId, state])).toEqual([['unknown', 'unverified'], ['ask', 'waiting_input']]);
     expect(reads.task(requester, 'ask')).toMatchObject({
       task: { state: 'waiting_input', title: 'Review the tests' }, sessionState: 'waiting_input',
       observedAt: '1970-01-01T00:00:00.020Z', pendingQuestion: { id: 'q1', text: 'Which tests?' },
@@ -60,6 +61,20 @@ it('projects only owned, authorized, mapped nonterminal sessions and separates o
     expect(() => reads.task(requester, 'hidden')).toThrow('ACCESS_DENIED');
     db.exec("UPDATE repo_connections SET retired_at=30 WHERE id='alice-r'");
     expect(() => reads.task(requester, 'ask')).toThrow('NOT_FOUND');
+  } finally { db.close(); }
+});
+
+it('omits stale questions and does not let stale or absent observations hide local blockers', () => {
+  let at = observationAt + 15 * 60_000;
+  const { db, reads } = fixture(() => at);
+  try {
+    expect(reads.task(requester, 'ask')).toMatchObject({ sessionState: 'unverified', pendingQuestion: null });
+    expect(reads.activeSessions(requester).sessions.map(({ state }) => state)).toEqual(['unverified', 'unverified']);
+    db.exec("UPDATE tasks SET state='needs_recovery' WHERE id='ask'; UPDATE tasks SET state='needs_auth' WHERE id='unknown';");
+    at = observationAt;
+    expect(reads.activeSessions(requester).sessions.map(({ taskId, state, blocker }) => [taskId, state, blocker]))
+      .toEqual([['unknown', 'needs_auth', null], ['ask', 'needs_recovery', 'recovery']]);
+    expect(reads.task(requester, 'ask')).toMatchObject({ task: { state: 'needs_recovery' }, sessionState: 'waiting_input', pendingQuestion: null });
   } finally { db.close(); }
 });
 
@@ -86,6 +101,8 @@ it('uses terminal timestamps and preserves unknown usage instead of counting it 
       repositories: [{ repoId: 'r', completed: 1 }],
       weekly: [{ weekStart: '2026-11-23', completed: 1, credits: 4 }],
     });
+    db.exec("INSERT INTO task_observations (task_id,terminal_at) VALUES ('older',1795737600000)");
+    expect(reads.statistics(requester)).toMatchObject({ credits: { measured: 4 }, weekly: [{ credits: null }] });
     db.exec("UPDATE task_observations SET credits=NULL WHERE task_id='done'");
     expect(reads.statistics(requester)).toMatchObject({ credits: { measured: null }, weekly: [{ credits: null }] });
   } finally { db.close(); }

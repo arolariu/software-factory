@@ -22,6 +22,11 @@ type Access = (connectionId: string, requester: Requester) => 'valid' | 'denied'
 
 const active = (state: Row['session_state']): state is Summary['sessions'][number]['state'] =>
   state !== null && state !== 'completed' && state !== 'stopped' && state !== 'failed';
+const observationLifetime = 15 * 60_000;
+function currentObservation(row: Row, at: number) {
+  return active(row.session_state) && row.observed_at !== null && row.observed_at <= at &&
+    at - row.observed_at < observationLifetime ? row.session_state : null;
+}
 const disabled = { available: false, reasonCode: 'CAPABILITY_UNAVAILABLE' } as const;
 const fields = (row: Row) => ({
   taskId: row.id, repoId: row.repo_id, workItemKey: row.work_item_key, title: row.title, issueUrl: row.issue_url,
@@ -42,6 +47,7 @@ function outcomes(rows: Row[]): Outcomes {
 
 function weeklyOutcomes(rows: Row[]): Statistics['weekly'] {
   const result = new Map<string, Statistics['weekly'][number]>();
+  const incomplete = new Set<string>();
   for (const row of rows) {
     if (row.terminal_at === null || active(row.state)) continue;
     const date = new Date(row.terminal_at);
@@ -49,13 +55,16 @@ function weeklyOutcomes(rows: Row[]): Statistics['weekly'] {
     const weekStart = date.toISOString().slice(0, 10);
     const week = result.get(weekStart) ?? { weekStart, completed: 0, credits: null };
     if (row.state === 'completed') week.completed = (week.completed ?? 0) + 1;
-    if (row.credits !== null) week.credits = (week.credits ?? 0) + row.credits;
+    if (row.credits === null) {
+      incomplete.add(weekStart);
+      week.credits = null;
+    } else if (!incomplete.has(weekStart)) week.credits = (week.credits ?? 0) + row.credits;
     result.set(weekStart, week);
   }
   return [...result.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
 }
 
-export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, readAccess: Access) {
+export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, readAccess: Access, now = Date.now) {
   const cursor = createCursorCodec(cursorKey);
   const connections = db.prepare<[string], Connection>(`
     SELECT c.id AS connection_id, c.generation, r.id, r.provider, coalesce(nullif(r.name,''),r.canonical_url) AS name
@@ -68,7 +77,12 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       o.question_id, o.question_text, o.terminal_at, o.credits
     FROM tasks t LEFT JOIN task_observations o ON o.task_id=t.id
   `;
-  const byRequester = db.prepare<[string], Row>(`${projection} WHERE t.requester_id=? ORDER BY t.created_at ASC, t.id ASC`);
+  const byRequester = db.prepare<[string], Row>(`${projection} WHERE t.requester_id=?`);
+  const mappedActive = db.prepare<[string, string], Row>(`${projection}
+    WHERE t.requester_id=? AND t.connection_id IN (SELECT value FROM json_each(?))
+      AND t.sdk_session_id IS NOT NULL AND t.state NOT IN ('completed','stopped','failed')
+      AND (o.session_state IS NULL OR o.session_state NOT IN ('completed','stopped','failed'))
+    ORDER BY t.created_at DESC,t.id ASC`);
   const byId = db.prepare<[string, string], Row>(`${projection} WHERE t.requester_id=? AND t.id=?`);
   const byConnection = db.prepare<[string, string], Row>(`
     ${projection} WHERE t.requester_id=? AND t.connection_id=? AND t.state NOT IN ('completed','stopped','failed')
@@ -85,13 +99,11 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
   }
 
   function authorized(requester: Requester) {
-    const visible = connections.all(requester.id).filter((row) => {
+    return connections.all(requester.id).filter((row) => {
       const access = readAccess(row.connection_id, requester);
       if (access === 'unverified') throw new ApiFailure('ACCESS_UNVERIFIED');
       return access === 'valid';
     });
-    const connectionIds = new Set(visible.map((row) => row.connection_id));
-    return { visible, rows: byRequester.all(requester.id).filter((row) => connectionIds.has(row.connection_id)) };
   }
 
   return {
@@ -105,23 +117,27 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       return { items: rows.slice(from, end), nextCursor: end < rows.length ? cursor.encode(scope, revision, end) : null };
     }),
     activeSessions: db.transaction((requester: Requester): Summary => {
-      const { visible, rows } = authorized(requester);
+      const visible = authorized(requester);
+      const rows = mappedActive.all(requester.id, JSON.stringify(visible.map(({ connection_id }) => connection_id)));
+      const at = now();
       return {
         repositories: visible.map(({ id, name, provider }) => ({ id, name, provider })),
-        sessions: rows.filter((row) => active(row.state) && row.sdk_session_id !== null && (row.session_state === null || active(row.session_state)))
-          .map((row) => ({
-            ...fields(row), state: (row.session_state ?? 'unverified') as Summary['sessions'][number]['state'], blocker: row.blocker,
-          })),
+        sessions: rows.map((row) => {
+          const observed = currentObservation(row, at);
+          const state = row.state === 'needs_auth' || row.state === 'needs_recovery' ? row.state : observed ?? 'unverified';
+          return { ...fields(row), state, blocker: state === 'needs_recovery' ? 'recovery' : observed === state ? row.blocker : null };
+        }),
       };
     }),
     task: db.transaction((requester: Requester, id: string): Task => {
       const row = byId.get(requester.id, id);
       if (!row) throw new ApiFailure('NOT_FOUND');
       requireConnection(requester, row.connection_id);
-      const observed = active(row.session_state) ? row.session_state : null;
+      const observed = currentObservation(row, now());
+      const nonterminal = active(row.state) && (row.session_state === null || active(row.session_state));
       return {
         task: taskView(row),
-        sessionState: row.sdk_session_id === null ? null : observed ?? (row.session_state === null && active(row.state) ? 'unverified' : null),
+        sessionState: row.sdk_session_id === null || !nonterminal ? null : observed ?? 'unverified',
         observedAt: row.observed_at === null ? null : new Date(row.observed_at).toISOString(),
         pendingQuestion: row.state === 'waiting_input' && observed === 'waiting_input' && row.question_id !== null && row.question_text !== null
           ? { id: row.question_id, text: row.question_text } : null,
@@ -130,7 +146,9 @@ export function createTaskReads(db: SQLite.Database, cursorKey: Uint8Array, read
       };
     }),
     statistics: db.transaction((requester: Requester): Statistics => {
-      const { visible, rows } = authorized(requester);
+      const visible = authorized(requester);
+      const connectionIds = new Set(visible.map((row) => row.connection_id));
+      const rows = byRequester.all(requester.id).filter((row) => connectionIds.has(row.connection_id));
       return {
         ...outcomes(rows), weekly: weeklyOutcomes(rows),
         repositories: visible.map(({ id }) => ({ repoId: id, ...outcomes(rows.filter((row) => row.repo_id === id)) })),
