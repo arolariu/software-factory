@@ -2,6 +2,7 @@ import SQLite from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { migrate } from './migrations.js';
 import { createTaskControls } from './task-controls.js';
+import { createHmac } from 'node:crypto';
 
 const requester = { id: 'alice' };
 const reply = { kind: 'answer', requestId: 'reply-1', questionId: 'q1', text: 'Keep reply text out of the ledger.' } as const;
@@ -140,4 +141,34 @@ it('cancels only an owned unclaimed operation and releases a claimed slot only o
   expect(controls.fail({ ...claimed, sessionId: 'wrong' })).toBe(false);
   expect(controls.fail(claimed)).toBe(true);
   expect(controls.reserve(requester, 'task', { ...stop, requestId: 'follow-up' }).operationId).not.toBe(pending.operationId);
+});
+
+it('reconstructs legacy recovery only while the original immutable binding can be proven', () => {
+  const { db, controls, key } = fixture();
+  const { operationId } = controls.reserve(requester, 'task', stop);
+  const claim = controls.claim(operationId, stop)!;
+  expect(controls.recovery(requester, operationId)).toBeUndefined();
+  const priorDigest = createHmac('sha256', key).update(JSON.stringify([
+    'binding', claim.taskId, claim.requesterId, claim.connectionId, claim.identityId,
+    claim.generation, claim.scope, claim.sessionId, claim.copilotAccountId,
+  ])).digest('hex');
+  db.prepare('UPDATE task_controls SET binding_hash=? WHERE id=?').run(priorDigest, operationId);
+  controls.recoverInterrupted();
+  expect(controls.recovery(requester, operationId)).toEqual(claim);
+  expect(controls.recovery({ id: 'bob' }, operationId)).toBeUndefined();
+  db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
+  expect(controls.recovery(requester, operationId)).toBeUndefined();
+  expect(controls.confirm(claim)).toBe(false);
+});
+
+it('releases a not-yet-dispatched control when authorization is withdrawn before claim', () => {
+  const { db, key } = fixture();
+  let allowed = true;
+  const controls = createTaskControls(db, key, () => allowed, () => 20);
+  const { operationId } = controls.reserve(requester, 'task', reply);
+  allowed = false;
+  expect(controls.claim(operationId, reply)).toBeUndefined();
+  expect(db.prepare('SELECT state FROM task_controls WHERE id=?').get(operationId)).toEqual({ state: 'failed' });
+  allowed = true;
+  expect(controls.reserve(requester, 'task', stop).operationId).not.toBe(operationId);
 });
