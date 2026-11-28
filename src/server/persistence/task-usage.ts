@@ -19,6 +19,13 @@ const whole = Type.Integer(amount);
 const fractional = Type.Number(amount);
 const observedAt = Type.Integer({ minimum: 0, maximum: 253402300799999 });
 
+export function readCopilotUsage(raw: unknown) {
+  if (!Value.Check(measures, raw)) return null;
+  const nanoAiu = raw.aiCreditsStatus === 'complete' && Value.Check(whole, raw.totalNanoAiu) ? raw.totalNanoAiu : null;
+  const premiumRequests = Value.Check(fractional, raw.totalPremiumRequestCost) ? raw.totalPremiumRequestCost : null;
+  return nanoAiu === null && premiumRequests === null ? null : { nanoAiu, premiumRequests };
+}
+
 export function createTaskUsage(db: SQLite.Database, readAccess: Access) {
   const mapping = db.prepare<[string, string], UsageTarget>(`
     SELECT t.id AS taskId, t.requester_id AS requesterId, t.connection_id AS connectionId, t.sdk_session_id AS sessionId,
@@ -45,16 +52,14 @@ export function createTaskUsage(db: SQLite.Database, readAccess: Access) {
     return current && readAccess(current.connectionId, requester) === 'valid' ? current : undefined;
   };
   const record = db.transaction((evidence: UsageTarget, raw: unknown, at: number) => {
-    if (!Value.Check(measures, raw) || !Value.Check(observedAt, at)) return false;
-    const nanoAiu = raw.aiCreditsStatus === 'complete' && Value.Check(whole, raw.totalNanoAiu) ? raw.totalNanoAiu : null;
-    const premiumRequests = Value.Check(fractional, raw.totalPremiumRequestCost) ? raw.totalPremiumRequestCost : null;
-    if (nanoAiu === null && premiumRequests === null) return false;
+    const sample = readCopilotUsage(raw);
+    if (!sample || !Value.Check(observedAt, at)) return false;
     const current = target({ id: evidence.requesterId }, evidence.taskId);
     if (!current || current.connectionId !== evidence.connectionId || current.sessionId !== evidence.sessionId ||
       current.scope !== evidence.scope || current.copilotAccountId !== evidence.copilotAccountId ||
       current.generation !== evidence.generation) return false;
     return upsert.run(current.taskId, current.sessionId, current.scope, current.copilotAccountId, current.generation,
-      at, nanoAiu, premiumRequests).changes === 1;
+      at, sample.nanoAiu, sample.premiumRequests).changes === 1;
   });
   return { target, record: record.immediate };
 }

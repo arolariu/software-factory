@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { dispatchCloudTask, type CloudEvent, type CloudLaunchClient } from './cloud-launch.js';
+import { dispatchCloudTask, probeCloudTask, type CloudEvent, type CloudLaunchClient } from './cloud-launch.js';
 
 function fixture() {
   const listeners = new Set<(event: CloudEvent) => void>();
@@ -12,6 +12,9 @@ function fixture() {
     },
     getEvents: vi.fn(async (): Promise<CloudEvent[]> => []),
     send: vi.fn(async (_options: { prompt: string; clientTurnId: string }) => 'not-a-delivery-receipt'),
+    rpc: { usage: { getMetrics: vi.fn(async (): Promise<unknown> => ({
+      aiCreditsStatus: 'complete', totalNanoAiu: 0, totalPremiumRequestCost: 0.25, raw: 'private',
+    })) } },
   };
   const client = {
     getAuthStatus: vi.fn(async (): Promise<{ isAuthenticated: boolean; authType: string; login?: string }> =>
@@ -45,6 +48,7 @@ it('waits for the remote worker and a matching consumed-turn event, not the SDK 
   expect(delivered).toBe(false);
   emit({ type: 'user.message', data: { clientTurnId: request.turnId } });
   expect(await pending).toBe(session.sessionId);
+  expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
   expect(listeners.size).toBe(0);
   expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
     sessionId: request.requestedSessionId, cloud: { repository: request.repository },
@@ -99,4 +103,77 @@ it('cannot treat a fresh SDK message ID or history failure as evidence when the 
   expect(listeners.size).toBe(0);
   await expect(dispatchCloudTask(client, request, controller.signal)).rejects.toThrow();
   expect(client.createSession).toHaveBeenCalledTimes(1);
+});
+
+it('reads exact session usage only after the delivered main-agent turn ends', async () => {
+  const { client, emit, session, listeners } = fixture();
+  const pending = probeCloudTask(client, request);
+  await vi.waitFor(() => expect(listeners.size).toBe(1));
+  emit({ type: 'session.start', data: { producer: 'copilot-agent' } });
+  await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
+  emit({ type: 'user.message', data: { clientTurnId: request.turnId, interactionId: 'interaction' } });
+  emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
+  emit({ type: 'assistant.turn_start', data: { interactionId: 'interaction', turnId: 'tool', parentToolCallId: 'tool-parent' } });
+  emit({ type: 'assistant.turn_end', data: { turnId: 'tool' } });
+  emit({ type: 'assistant.turn_start', data: { interactionId: 'different-interaction', turnId: 'other' } });
+  emit({ type: 'assistant.turn_end', data: { turnId: 'other' } });
+  emit({ type: 'assistant.turn_start', agentId: 'sub-agent', data: { interactionId: 'interaction', turnId: 'sub' } });
+  emit({ type: 'assistant.turn_end', data: { turnId: 'sub' } });
+  emit({ type: 'assistant.turn_start', data: { interactionId: 'interaction', turnId: 'main' } });
+  emit({ type: 'assistant.turn_end', agentId: 'another-agent', data: { turnId: 'main' } });
+  await Promise.resolve();
+  expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
+  emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
+  expect(await pending).toEqual({ sessionId: session.sessionId, usage: { nanoAiu: 0, premiumRequests: 0.25 } });
+  expect(session.rpc.usage.getMetrics).toHaveBeenCalledOnce();
+  expect(listeners.size).toBe(0);
+});
+
+it.each([
+  [new Error('private usage failure'), null],
+  [{ aiCreditsStatus: 'partial', totalNanoAiu: 500, totalPremiumRequestCost: 0 }, { nanoAiu: null, premiumRequests: 0 }],
+] as const)('reports only verified units without exposing ambiguous usage or RPC failures (%j)', async (result, usage) => {
+  const { client, emit, session } = fixture();
+  session.getEvents.mockResolvedValueOnce([{ type: 'session.start', data: { producer: 'copilot-agent' } }]);
+  session.send.mockImplementationOnce(async ({ clientTurnId }) => {
+    emit({ type: 'user.message' });
+    emit({ type: 'user.message', data: { clientTurnId, interactionId: 'interaction' } });
+    emit({ type: 'assistant.turn_start', data: { interactionId: 'interaction', turnId: 'main' } });
+    emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
+    return 'message-id';
+  });
+  if (result instanceof Error) session.rpc.usage.getMetrics.mockRejectedValueOnce(result);
+  else session.rpc.usage.getMetrics.mockResolvedValueOnce(result);
+  await expect(probeCloudTask(client, request)).resolves.toEqual({ sessionId: session.sessionId, usage });
+});
+
+it('preserves delivery when the usage wait is cancelled before a matching turn ends', async () => {
+  const { client, emit, session, listeners } = fixture();
+  const controller = new AbortController();
+  const pending = probeCloudTask(client, request, controller.signal);
+  await vi.waitFor(() => expect(listeners.size).toBe(1));
+  emit({ type: 'session.start', data: { producer: 'copilot-agent' } });
+  await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
+  emit({ type: 'user.message', data: { clientTurnId: request.turnId } });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  controller.abort();
+  expect(await pending).toEqual({ sessionId: session.sessionId, usage: null });
+  expect(session.rpc.usage.getMetrics).not.toHaveBeenCalled();
+  expect(listeners.size).toBe(0);
+});
+
+it('preserves delivery when usage RPC does not complete', async () => {
+  const { client, emit, session, listeners } = fixture();
+  const controller = new AbortController();
+  session.rpc.usage.getMetrics.mockImplementationOnce(() => new Promise(() => {}));
+  session.getEvents.mockResolvedValueOnce([{ type: 'session.start', data: { producer: 'copilot-agent' } }]);
+  const pending = probeCloudTask(client, request, controller.signal);
+  await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
+  emit({ type: 'user.message', data: { clientTurnId: request.turnId, interactionId: 'interaction' } });
+  emit({ type: 'assistant.turn_start', data: { interactionId: 'interaction', turnId: 'main' } });
+  emit({ type: 'assistant.turn_end', data: { turnId: 'main' } });
+  await vi.waitFor(() => expect(session.rpc.usage.getMetrics).toHaveBeenCalledOnce());
+  controller.abort();
+  expect(await pending).toEqual({ sessionId: session.sessionId, usage: null });
+  expect(listeners.size).toBe(0);
 });

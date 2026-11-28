@@ -1,8 +1,13 @@
 import { addAbortListener } from 'node:events';
 import { createSdk, withCopilotRuntime } from '../identity/copilot-runtime.js';
 import { ApiFailure } from '../http/problems.js';
+import { readCopilotUsage } from '../persistence/task-usage.js';
 
-export type CloudEvent = { type: string; data?: { producer?: string; clientTurnId?: string } };
+export type CloudEvent = {
+  type: string; agentId?: string; data?: {
+    producer?: string; clientTurnId?: string; turnId?: string; interactionId?: string; parentToolCallId?: string;
+  };
+};
 type CloudRequest = {
   requestedSessionId: string;
   repository: { owner: string; name: string };
@@ -20,10 +25,23 @@ export interface CloudLaunchClient {
     getEvents(): Promise<CloudEvent[]>;
     on(handler: (event: CloudEvent) => void): () => void;
     send(input: { prompt: string; clientTurnId: string }): Promise<string>;
+    rpc: { usage: { getMetrics(): Promise<unknown> } };
   }>;
 }
 
-export async function dispatchCloudTask(client: CloudLaunchClient, request: CloudRequest, parent?: AbortSignal) {
+async function sampleCloudUsage(readMetrics: () => Promise<unknown>, turnEnded: Promise<void>, signal: AbortSignal) {
+  const window = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+  const cancelled = Promise.withResolvers<null>();
+  const cleanup = addAbortListener(window, () => cancelled.resolve(null));
+  try {
+    const sample = turnEnded.then(async () => window.aborted ? null : readCopilotUsage(await readMetrics()));
+    return await Promise.race([sample.catch(() => null), cancelled.promise]);
+  } finally {
+    cleanup[Symbol.dispose]();
+  }
+}
+
+async function dispatch(client: CloudLaunchClient, request: CloudRequest, sample: boolean, parent?: AbortSignal) {
   const deadline = AbortSignal.timeout(60_000);
   const signal = parent ? AbortSignal.any([parent, deadline]) : deadline;
   signal.throwIfAborted();
@@ -47,10 +65,21 @@ export async function dispatchCloudTask(client: CloudLaunchClient, request: Clou
     if (session.sessionId !== request.requestedSessionId) throw new ApiFailure('ACCESS_UNVERIFIED');
     const ready = Promise.withResolvers<void>();
     const consumed = Promise.withResolvers<void>();
+    const finished = Promise.withResolvers<void>();
+    let interaction: string | undefined;
+    let rootTurn: string | undefined;
     let sending = false;
-    const observe = (event: CloudEvent) => {
-      if (event.type === 'session.start' && event.data?.producer === 'copilot-agent') ready.resolve();
-      if (sending && event.type === 'user.message' && event.data?.clientTurnId === request.turnId) consumed.resolve();
+    const observe = ({ type, data, agentId }: CloudEvent) => {
+      if (type === 'session.start' && data?.producer === 'copilot-agent') ready.resolve();
+      if (!sending || !data || agentId || data.parentToolCallId) return;
+      if (type === 'user.message' && data.clientTurnId === request.turnId) {
+        interaction ??= data.interactionId;
+        consumed.resolve();
+      } else if (type === 'assistant.turn_start' && interaction && data.interactionId === interaction) {
+        rootTurn ??= data.turnId;
+      } else if (type === 'assistant.turn_end' && rootTurn && data.turnId === rootTurn) {
+        finished.resolve();
+      }
     };
     unsubscribe = session.on(observe);
     // A worker can start before createSession returns. Prefer the cached event when present.
@@ -63,7 +92,8 @@ export async function dispatchCloudTask(client: CloudLaunchClient, request: Clou
     await Promise.race([session.send({ prompt: request.prompt, clientTurnId: request.turnId }), cancel.promise]);
     await Promise.race([consumed.promise, cancel.promise]);
     signal.throwIfAborted();
-    return session.sessionId;
+    const usage = sample ? await sampleCloudUsage(() => session.rpc.usage.getMetrics(), finished.promise, signal) : null;
+    return { sessionId: session.sessionId, usage };
   } finally {
     cancellation[Symbol.dispose]();
     unsubscribe?.();
@@ -71,6 +101,14 @@ export async function dispatchCloudTask(client: CloudLaunchClient, request: Clou
 }
 
 // Not registered by any production entry point: provider behavior must be proven on the approved target.
-export function dispatchCloudTaskWithSdk(token: string, request: CloudRequest, signal?: AbortSignal) {
-  return withCopilotRuntime(token, createSdk, (client) => dispatchCloudTask(client, request, signal), 65_000);
+export async function dispatchCloudTask(client: CloudLaunchClient, request: CloudRequest, signal?: AbortSignal) {
+  return (await dispatch(client, request, false, signal)).sessionId;
+}
+
+export function probeCloudTask(client: CloudLaunchClient, request: CloudRequest, signal?: AbortSignal) {
+  return dispatch(client, request, true, signal);
+}
+
+export function probeCloudTaskWithSdk(token: string, request: CloudRequest, signal?: AbortSignal) {
+  return withCopilotRuntime(token, createSdk, (client) => probeCloudTask(client, request, signal), 65_000);
 }

@@ -13,7 +13,9 @@ function fixture() {
     return 'ghu_trial';
   });
   const confirm = vi.fn(async () => 'owner/disposable');
-  const dispatch = vi.fn(async (_token: string, request: { requestedSessionId: string }) => request.requestedSessionId);
+  const dispatch = vi.fn(async (_token: string, request: { requestedSessionId: string }): Promise<{
+    sessionId: string; usage: { nanoAiu: number | null; premiumRequests: number | null } | null;
+  }> => ({ sessionId: request.requestedSessionId, usage: { nanoAiu: 750, premiumRequests: 0.25 } }));
   return { fetcher, report, show, authorize, confirm, dispatch };
 }
 
@@ -76,6 +78,7 @@ it('dispatches once with the approved account and exact repository and reports o
   expect(f.fetcher.mock.calls.every(([, options]) => options?.redirect === 'error')).toBe(true);
   const output = f.show.mock.calls.flat().join('\n');
   expect(output).toContain('"state":"delivery_confirmed"');
+  expect(output).toContain('"usage":{"nanoAiu":750,"premiumRequests":0.25}');
   expect(output).not.toContain('ghu_trial');
   expect(output).not.toContain('README.md');
 });
@@ -89,7 +92,7 @@ it('does not retry after an ambiguous trial and does not print raw SDK errors', 
   expect(f.report).toHaveBeenCalledWith(expect.stringContaining('Do not retry'));
   expect(f.report.mock.calls.flat().join(' ')).not.toContain('Internal provider');
   provider(f);
-  f.dispatch.mockResolvedValueOnce('other-session');
+  f.dispatch.mockResolvedValueOnce({ sessionId: 'other-session', usage: null });
   expect(await runCloudTrial(input, f)).toBe(1);
   expect(f.dispatch).toHaveBeenCalledTimes(2);
   expect(f.show.mock.calls.flat().join(' ')).not.toContain('delivery_confirmed');

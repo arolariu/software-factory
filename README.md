@@ -65,7 +65,9 @@ On a development host only, build Factory and choose an explicitly approved disp
 bash scripts/check-copilot-cloud.sh https://github.com/OWNER/REPOSITORY REPOSITORY_ID GITHUB_USER_ID
 ```
 
-Use the canonical repository spelling and the immutable numeric GitHub IDs. The terminal asks you to confirm the repository and then approve a fresh device code. The trial verifies the repository ID, its owner, the App installation, and the SDK login before requesting one billable cloud session with a fixed README-summary prompt. It does not ask the agent to make or publish changes and does not auto-approve permission requests. On ambiguous delivery, inspect the printed session ID in GitHub before retrying. A successful receipt proves the readiness and consumed-turn handshake for that run, not task completion, remote stop, publication, or production enablement.
+Use the canonical repository spelling and the immutable numeric GitHub IDs. The terminal asks you to confirm the repository and then approve a fresh device code. The trial verifies the repository ID, its owner, the App installation, and the SDK login before requesting one billable cloud session with a fixed README-summary prompt. It does not ask the agent to make or publish changes and does not auto-approve permission requests. On ambiguous delivery, inspect the printed session ID in GitHub before retrying.
+
+A successful receipt proves the readiness and consumed-turn handshake for that run. If the matching main-agent turn ends within the observation window, the trial also checks that session's usage RPC. `usage: null` means no verified sample was obtained, not zero usage or failed delivery. An observed sample reports nano-AI units and premium request cost separately. This trial does not prove remote stop, publication, or production enablement.
 
 The portal's Active Sessions and Statistics screens distinguish an unavailable backend from a verified empty result. They do not discover sessions, launch work, or estimate unmeasured usage.
 
