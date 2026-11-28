@@ -36,12 +36,17 @@ it('denies the default gate and stale verification without reserving any task', 
 
 it('replays identical requests without duplicating tasks and rejects conflicting requests', () => {
   const db = fixture();
-  const starts = createTaskStarts(db, () => binding, () => 10);
+  let generation = 1;
+  const starts = createTaskStarts(db, () => ({ ...binding, generation }), () => 10);
   const accepted = starts.reserve(requester, binding.connectionId, input);
   expect(accepted.state).toBe('queued');
   expect(starts.reserve(requester, binding.connectionId, { ...input, overrides: {} })).toEqual(accepted);
   expect(() => starts.reserve(requester, binding.connectionId, { ...input, copilotAccountId: 'other' })).toThrow('REQUEST_ID_REUSED');
   expect(() => starts.reserve(requester, binding.connectionId, { ...input, startRequestId: 'twice' })).toThrow('TASK_ALREADY_ACTIVE');
+  generation = 2;
+  db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
+  expect(starts.reserve(requester, binding.connectionId, input)).toEqual(accepted);
+  expect(db.prepare('SELECT connection_generation FROM task_starts').get()).toEqual({ connection_generation: 1 });
   expect(db.prepare('SELECT count(*) AS n FROM tasks').get()).toEqual({ n: 1 });
 });
 
@@ -59,7 +64,9 @@ it('confirms only the exact claimed start; recovery never retries ambiguous work
   expect(restarted.recoverInterrupted()).toBe(1);
   expect(restarted.recoverInterrupted()).toBe(0);
   expect(restarted.claim(taskId)).toBeUndefined();
-  expect(restarted.confirm(claim, 'actual')).toBe(true);
+  expect(restarted.recovery(requester, taskId)).toEqual(claim);
+  expect(restarted.recovery({ id: 'bob' }, taskId)).toBeUndefined();
+  expect(restarted.confirm(restarted.recovery(requester, taskId)!, 'actual')).toBe(true);
   expect(restarted.confirm(claim, 'duplicate')).toBe(false);
   expect(db.prepare('SELECT state, sdk_session_id FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'running', sdk_session_id: 'actual' });
   expect(db.prepare('SELECT session_state FROM task_observations WHERE task_id=?').get(taskId)).toEqual({ session_state: 'running' });
@@ -71,5 +78,32 @@ it('does not claim queued work after a reconnect changes its generation', () => 
   const { taskId } = starts.reserve(requester, binding.connectionId, input);
   db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
   expect(starts.claim(taskId)).toBeUndefined();
-  expect(db.prepare('SELECT state, sdk_session_id FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'needs_auth', sdk_session_id: null });
+  expect(db.prepare('SELECT state, sdk_session_id FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'failed', sdk_session_id: null });
+});
+
+it('preserves verified terminal observations and rejects a receipt from an obsolete connection', () => {
+  const db = fixture();
+  const starts = createTaskStarts(db, () => binding, () => 50);
+  const { taskId } = starts.reserve(requester, binding.connectionId, input);
+  const claim = starts.claim(taskId)!;
+  db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
+  expect(starts.confirm(claim, 'actual')).toBe(false);
+  expect(starts.fail({ ...claim, requestedSessionId: 'forged' })).toBe(false);
+  db.exec("UPDATE repo_connections SET generation=1 WHERE id='conn'");
+  db.prepare("INSERT INTO task_observations (task_id,session_state,observed_at,terminal_at) VALUES (?,'completed',20,21)").run(taskId);
+  expect(starts.confirm(claim, 'actual')).toBe(true);
+  expect(db.prepare('SELECT state FROM tasks WHERE id=?').get(taskId)).toEqual({ state: 'completed' });
+  expect(db.prepare('SELECT session_state,observed_at,terminal_at FROM task_observations WHERE task_id=?').get(taskId))
+    .toEqual({ session_state: 'completed', observed_at: 20, terminal_at: 21 });
+});
+
+it('releases a claimed start only after an exact definitive rejection', () => {
+  const db = fixture();
+  const starts = createTaskStarts(db, () => binding);
+  const { taskId } = starts.reserve(requester, binding.connectionId, input);
+  const claim = starts.claim(taskId)!;
+  expect(starts.fail({ ...claim, workItemKey: '8' })).toBe(false);
+  expect(starts.fail(claim)).toBe(true);
+  expect(starts.confirm(claim, 'late')).toBe(false);
+  expect(starts.reserve(requester, binding.connectionId, { ...input, startRequestId: 'replacement' }).taskId).not.toBe(taskId);
 });

@@ -60,6 +60,7 @@ it('does not retry an interrupted stop or mark the task stopped without exact co
   expect(restarted.recoverInterrupted()).toBe(1);
   expect(restarted.recoverInterrupted()).toBe(0);
   expect(restarted.claim(receipt.operationId, stop)).toBeUndefined();
+  expect(restarted.recovery(requester, receipt.operationId)).toEqual(claim);
   expect(db.prepare('SELECT state,archived_at FROM tasks').get()).toEqual({ state: 'waiting_input', archived_at: null });
   expect(restarted.confirm(claim)).toBe(true);
   expect(restarted.confirm(claim)).toBe(false);
@@ -76,6 +77,8 @@ it('does not claim work for stale connections or superseded questions', () => {
   const other = controls.reserve(requester, 'task', { ...reply, requestId: 'reply-2', questionId: 'q2' });
   db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
   expect(controls.claim(other.operationId, { ...reply, requestId: 'reply-2', questionId: 'q2' })).toBeUndefined();
+  const next = { ...reply, requestId: 'reply-3', questionId: 'q2' };
+  expect(controls.claim(controls.reserve(requester, 'task', next).operationId, next)).toMatchObject({ generation: 2 });
 });
 
 it('cannot apply stop evidence to a different generation or replace a terminal observation', () => {
@@ -108,7 +111,33 @@ it('releases an unclaimed reply after restart and consumes only the confirmed pe
   const claim = restarted.claim(receipt.operationId, answer);
   if (!claim) throw new Error('Expected claimed answer');
   expect(restarted.confirm(claim)).toBe(true);
-  expect(db.prepare('SELECT question_id,question_text FROM task_observations').get())
-    .toEqual({ question_id: null, question_text: null });
+  expect(db.prepare('SELECT session_state,question_id,question_text FROM task_observations').get())
+    .toEqual({ session_state: 'unverified', question_id: null, question_text: null });
   expect(() => restarted.reserve(requester, 'task', { ...reply, requestId: 'reply-3' })).toThrow('STALE_QUESTION');
+});
+
+it('reconciles an independently observed stop without changing the observation timestamp', () => {
+  const { db, controls } = fixture();
+  const receipt = controls.reserve(requester, 'task', stop);
+  const claim = controls.claim(receipt.operationId, stop)!;
+  db.exec("UPDATE task_observations SET session_state='stopped',terminal_at=18,observed_at=18");
+  expect(controls.confirm(claim)).toBe(true);
+  expect(db.prepare('SELECT state FROM tasks').get()).toEqual({ state: 'stopped' });
+  expect(db.prepare('SELECT terminal_at,observed_at,question_id FROM task_observations').get())
+    .toEqual({ terminal_at: 18, observed_at: 18, question_id: null });
+});
+
+it('cancels only an owned unclaimed operation and releases a claimed slot only on exact evidence', () => {
+  const { db, controls } = fixture();
+  const queued = controls.reserve(requester, 'task', reply);
+  expect(controls.cancel({ id: 'bob' }, queued.operationId)).toBe(false);
+  expect(controls.cancel(requester, queued.operationId)).toBe(true);
+  expect(controls.claim(queued.operationId, reply)).toBeUndefined();
+  const pending = controls.reserve(requester, 'task', stop);
+  const claimed = controls.claim(pending.operationId, stop)!;
+  expect(controls.cancel(requester, pending.operationId)).toBe(false);
+  db.exec("UPDATE repo_connections SET generation=2 WHERE id='conn'");
+  expect(controls.fail({ ...claimed, sessionId: 'wrong' })).toBe(false);
+  expect(controls.fail(claimed)).toBe(true);
+  expect(controls.reserve(requester, 'task', { ...stop, requestId: 'follow-up' }).operationId).not.toBe(pending.operationId);
 });
